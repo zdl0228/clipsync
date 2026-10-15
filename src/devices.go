@@ -6,11 +6,18 @@ import (
 	"github.com/getlantern/systray"
 )
 
-// 已配对设备记录：用于首次配对成功时发通知，重连不重复提示
+// 已配对设备记录：用于首次配对成功时发通知，重连不重复提示；
+// 持久化到 config.json，进程重启后仍记住，不把重连误当"新配对"
 var (
 	pairedMu  sync.Mutex
 	pairedSet = map[string]bool{}
 )
+
+func init() {
+	pairedMu.Lock()
+	pairedSet = getPairedMap()
+	pairedMu.Unlock()
+}
 
 // 设备列表/发送目标子菜单槽位
 var (

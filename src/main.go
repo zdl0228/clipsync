@@ -217,8 +217,13 @@ func onReady() {
 			}
 			pairedMu.Unlock()
 			if first {
+				addPaired(peer) // 持久化，重启后不再当作新配对重复提示
 				log.Printf("配对新设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已配对新设备：%s", peer))
+			} else {
+				// 已配对设备重连：轻量提醒"已连接"，不再重复"新配对"
+				log.Printf("已连接设备: %s", peer)
+				notify("ClipSync", fmt.Sprintf("已连接设备：%s", peer))
 			}
 		} else {
 			// 对端断开：清理该 IP 未完成的接收状态与进度计数，避免泄漏

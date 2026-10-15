@@ -5,13 +5,12 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
-
-	"github.com/gen2brain/beeep"
 )
 
-// notify 发送系统通知（成功/完成类消息用被动通知，不弹确认框）
+// notify 发送系统通知；实现按平台分发（darwin 用系统原生 UNUserNotificationCenter，
+// 其余平台用 beeep），保证通知横幅图标跟随程序图标
 func notify(title, msg string) {
-	if err := beeep.Notify(title, msg, ""); err != nil {
+	if err := notifyOS(title, msg); err != nil {
 		log.Printf("发送通知失败: %v", err)
 	}
 }

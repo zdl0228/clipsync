@@ -27,9 +27,10 @@ func init() {
 }
 
 type configFile struct {
-	Token       string `json:"token"`
-	AutoStart   string `json:"autoStart"`   // "on"/"off"，记录开机自启偏好
-	ContextMenu string `json:"contextMenu"` // "on"/"off"，记录 Windows 右键发送偏好
+	Token       string   `json:"token"`
+	AutoStart   string   `json:"autoStart"`   // "on"/"off"，记录开机自启偏好
+	ContextMenu string   `json:"contextMenu"` // "on"/"off"，记录 Windows 右键发送偏好
+	Paired      []string `json:"pairedDevices"` // 已配对设备名，持久化后重连/重启不再重复提示"新配对"
 }
 
 // cfgMu 串行化对 config.json 的读写：托盘开关（开机启动/右键发送）在各自
@@ -120,6 +121,36 @@ func loadToken() {
 		return
 	}
 	token = defaultToken
+}
+
+// getPairedMap 读取已配对设备集合；进程重启后仍记住，避免每次启动重复提示"新配对"
+func getPairedMap() map[string]bool {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	m := map[string]bool{}
+	for _, n := range readConfigLocked().Paired {
+		if n != "" {
+			m[n] = true
+		}
+	}
+	return m
+}
+
+// addPaired 把设备名标记为已配对并原子写回 config.json（不覆盖 token/autoStart/contextMenu）
+func addPaired(name string) {
+	if name == "" {
+		return
+	}
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	c := readConfigLocked()
+	for _, n := range c.Paired {
+		if n == name {
+			return
+		}
+	}
+	c.Paired = append(c.Paired, name)
+	writeConfigLocked(c)
 }
 
 // 证书全局单例：多个连接并发加载时只生成一次，避免并发写同一证书文件
