@@ -72,8 +72,6 @@ withParentMenuId: (int)theParentMenuId
   self->menu = [[NSMenu alloc] init];
   [self->menu setAutoenablesItems: FALSE];
   [self->statusItem setMenu:self->menu];
-  // 让菜单栏图标接受文件拖放（拖文件到图标即可触发 systray_dropped_files）
-  [self->statusItem.button registerForDraggedTypes:@[NSFilenamesPboardType]];
   systray_ready();
 }
 
@@ -210,53 +208,6 @@ NSMenuItem *find_menu_item(NSMenu *ourMenu, NSNumber *menuId) {
 - (void) quit
 {
   [NSApp terminate:self];
-}
-
-@end
-
-// ===== 菜单栏图标文件拖放支持（拖文件到图标 → systray_dropped_files） =====
-@interface NSStatusBarButton (ClipSyncDrop) <NSDraggingDestination>
-@end
-
-@implementation NSStatusBarButton (ClipSyncDrop)
-
-- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
-  NSPasteboard *pb = [sender draggingPasteboard];
-  if ([[pb types] containsObject:NSFilenamesPboardType]) {
-    return NSDragOperationCopy;
-  }
-  return NSDragOperationNone;
-}
-
-- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
-  NSPasteboard *pb = [sender draggingPasteboard];
-  if ([[pb types] containsObject:NSFilenamesPboardType]) {
-    return NSDragOperationCopy;
-  }
-  return NSDragOperationNone;
-}
-
-- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
-  NSPasteboard *pb = [sender draggingPasteboard];
-  if (![[pb types] containsObject:NSFilenamesPboardType]) {
-    return NO;
-  }
-  NSArray *files = [pb propertyListForType:NSFilenamesPboardType];
-  if (files == nil || [files count] == 0) {
-    return NO;
-  }
-  NSMutableString *joined = [NSMutableString string];
-  for (NSString *f in files) {
-    if ([f length] == 0) { continue; }
-    [joined appendString:f];
-    [joined appendString:@"\n"];
-  }
-  if ([joined length] == 0) { return NO; }
-  // [joined UTF8String] 的指针随 autorelease 释放而失效，必须 strdup 传一份稳定拷贝
-  char *cpy = strdup([joined UTF8String]);
-  systray_dropped_files(cpy);
-  free(cpy);
-  return YES;
 }
 
 @end

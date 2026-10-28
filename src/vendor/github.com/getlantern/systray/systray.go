@@ -22,8 +22,6 @@ var (
 
 	currentID = uint32(0)
 	quitOnce  sync.Once
-
-	onDropFunc func(files []string)
 )
 
 func init() {
@@ -235,18 +233,4 @@ func systrayMenuItemSelected(id uint32) {
 	// in case no one waiting for the channel
 	default:
 	}
-}
-
-// SetOnDrop sets the callback invoked when files/folders are dropped onto the
-// tray icon (macOS). The callback receives the dropped absolute paths.
-func SetOnDrop(f func(files []string)) {
-	onDropFunc = f
-}
-
-func systrayDroppedFiles(files []string) {
-	if onDropFunc == nil {
-		return
-	}
-	// run on a separate goroutine to avoid blocking the native event loop
-	go onDropFunc(files)
 }

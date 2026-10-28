@@ -9,22 +9,8 @@ package systray
 import "C"
 
 import (
-	"strings"
 	"unsafe"
 )
-
-//export systray_dropped_files
-func systray_dropped_files(paths *C.char) {
-	raw := C.GoString(paths)
-	var files []string
-	for _, f := range strings.Split(raw, "\n") {
-		f = strings.TrimSpace(f)
-		if f != "" {
-			files = append(files, f)
-		}
-	}
-	systrayDroppedFiles(files)
-}
 
 // SetTemplateIcon sets the systray icon as a template icon (on Mac), falling back
 // to a regular icon on other platforms.

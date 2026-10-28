@@ -6,73 +6,12 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/sqweek/dialog"
 )
 
 // ---------- 文件发送 ----------
-
-// onDropFiles 拖文件/文件夹到菜单栏图标时触发：
-// 只有 1 台设备在线 → 直接发送；多台在线 → 弹选择框勾选目标设备后发送
-func onDropFiles(files []string) {
-	if len(files) == 0 {
-		return
-	}
-	var targets []PeerInfo
-	for _, p := range netw.Peers() {
-		if p.Authed {
-			targets = append(targets, p)
-		}
-	}
-	if len(targets) == 0 {
-		notify("ClipSync", "没有可接收文件的设备在线")
-		return
-	}
-	var chosen []PeerInfo
-	if len(targets) == 1 {
-		chosen = targets
-	} else {
-		opts := make([]string, len(targets))
-		for i, t := range targets {
-			opts[i] = t.Name + " (" + t.IP + ")"
-		}
-		sel := choosePeers(opts)
-		if len(sel) == 0 {
-			log.Println("拖放发送：用户未选择目标设备，取消")
-			return
-		}
-		ipRe := regexp.MustCompile(`\(([0-9.]+)\)`)
-		for _, s := range sel {
-			if m := ipRe.FindStringSubmatch(s); m != nil {
-				for _, t := range targets {
-					if t.IP == m[1] {
-						chosen = append(chosen, t)
-						break
-					}
-				}
-			}
-		}
-	}
-	if len(chosen) == 0 {
-		log.Println("拖放发送：没有匹配到目标设备，取消")
-		return
-	}
-	log.Printf("拖放接收 %d 个文件/文件夹，发送给 %d 台设备", len(files), len(chosen))
-	for _, t := range chosen {
-		for _, p := range files {
-			if st, err := os.Stat(p); err == nil && st.IsDir() {
-				sendFolderTo(t.IP, p, true)
-			} else if st, err := os.Stat(p); err == nil && !st.IsDir() {
-				sendFileTo(t.IP, p, true)
-			} else {
-				log.Printf("拖放文件不存在，跳过: %s", p)
-			}
-		}
-	}
-	notify("ClipSync", fmt.Sprintf("已把 %d 个文件/文件夹发送给 %d 台设备", len(files), len(chosen)))
-}
 
 // sendFileTo 分块读取并发送文件到指定对端；断线时中止并提示
 // silent 为 true 时不发单条"发送完成"通知（批量发送时由上层统一汇总）

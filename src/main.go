@@ -345,9 +345,6 @@ func onReady() {
 			"修复：系统设置 → 通知 → ClipSync → 打开「允许通知」，样式选「横幅」或「提醒」。", st).Info()
 	}()
 
-	// 拖文件到菜单栏图标 → 发送给所有已认证在线设备
-	systray.SetOnDrop(onDropFiles)
-
 	go func() {
 		for range mAutoStart.ClickedCh {
 			next := !isAutoStartEnabled()
