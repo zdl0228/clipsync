@@ -14,6 +14,8 @@ const (
 	PacketClipboard = "clipboard"
 	PacketFileMeta  = "file_meta"
 	PacketFileData  = "file_data"
+	PacketPing      = "ping"
+	PacketPong      = "pong"
 
 	// 文件分块大小
 	FileChunkSize = 256 * 1024

@@ -65,6 +65,10 @@ func initLog() {
 func onReady() {
 	name, _ := os.Hostname()
 	log.Printf("配置目录: %s, 密钥: %s, 系统: %s/%s, 主机名: %s", configDir, token, runtime.GOOS, runtime.GOARCH, name)
+	if token == defaultToken {
+		log.Println("警告: 正在使用内置默认配对密钥；同网段任何 ClipSync 都能通过密钥校验，" +
+			"接入改为由「接入需确认」拦截。建议在 config.json 中为本机设置独立 token。")
+	}
 	netw = NewNetwork(name)
 	clip = NewClipboard()
 
@@ -79,12 +83,19 @@ func onReady() {
 			clip.NoteIncoming(h.MimeType, body)
 			switch h.MimeType {
 			case "text/plain":
-				clip.SetText(string(body))
+				if err := clip.SetText(string(body)); err != nil {
+					log.Printf("写文字失败: %v", err)
+				}
 			case "image/png":
 				if err := clip.SetImageSafe(body); err != nil {
 					log.Printf("写图片失败: %v", err)
 				}
 			}
+		case PacketPing:
+			// 心跳：回 pong 让对端知道本机还活着
+			netw.SendTo(ip, PacketHeader{Type: PacketPong}, nil)
+		case PacketPong:
+			// 收到 pong 本身已刷新 readLoop 里的 lastRecv，无需额外处理
 		}
 	})
 
@@ -141,6 +152,8 @@ func onReady() {
 	mDirect := systray.AddMenuItem("直连指定 IP…", "")
 	mBroadcast := systray.AddMenuItem("自动发现广播", "")
 	mBroadcast.Check()
+	mConfirm := systray.AddMenuItem("接入需确认: 开", "")
+	updateConfirmMenu(mConfirm)
 	systray.AddSeparator()
 
 	// 右键发送（仅 Windows）：默认开启；开启时幂等刷新注册表（自动修正 exe 路径），关闭时移除
@@ -269,6 +282,15 @@ func onReady() {
 		}
 	}()
 
+	go func() {
+		for range mConfirm.ClickedCh {
+			next := !getRequireConfirm()
+			setRequireConfirm(next)
+			log.Printf("接入需确认: %s", map[bool]string{true: "开", false: "关"}[next])
+			updateConfirmMenu(mConfirm)
+		}
+	}()
+
 	// 默认开机启动：除非用户此前明确关闭过，否则启动时自动开启
 	if getAutoStartPref() != "off" && !isAutoStartEnabled() {
 		if err := setAutoStart(true); err != nil {
@@ -329,7 +351,13 @@ func onReady() {
 
 	go func() {
 		for range mToken.ClickedCh {
-			dialog.Message("本机配对密钥：%s\n\n请让两台设备的 config.json 中 token 保持此值一致，两端才能加密连接。", token).Info()
+			msg := "本机配对密钥：" + token + "\n\n请让两台设备的 config.json 中 token 保持此值一致，两端才能加密连接。"
+			if token == defaultToken {
+				msg += "\n\n⚠️ 当前仍是内置默认密钥：同网段任何装了 ClipSync 的设备都能通过密钥校验。" +
+					"「接入需确认」会拦下陌生设备，但建议改成自己的密钥 —— 编辑 config.json 里的 token，" +
+					"两台设备填同一个值后重启。"
+			}
+			dialog.Message("%s", msg).Info()
 		}
 	}()
 

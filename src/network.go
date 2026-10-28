@@ -16,12 +16,23 @@ import (
 	"time"
 )
 
+// 心跳参数：20s 发一次 ping，90s 收不到任何包判定掉线（容忍短暂卡顿/休眠唤醒）
+const (
+	heartbeatInterval = 20 * time.Second
+	peerTimeout       = 90 * time.Second
+	tcpKeepAlive      = 15 * time.Second
+)
+
 type peer struct {
 	ip       string
 	name     string
 	conn     net.Conn
 	authed   bool
 	lastDial time.Time
+	lastRecv time.Time // 最近一次收到该对端任意包的时间（心跳超时判定）
+	// pongSeen 该对端至少回应过一次心跳。旧版本没有 ping/pong，若对它做超时
+	// 剔除会造成"每 90s 断一次再重连"的抖动，所以只对确认支持心跳的对端生效。
+	pongSeen bool
 }
 
 // PeerInfo 对外暴露的对端信息
@@ -75,6 +86,47 @@ func (n *Network) Start() {
 	go n.udpBroadcast()
 	go n.udpListen()
 	go n.tcpListen()
+	go n.heartbeat()
+}
+
+// heartbeat 应用层心跳：
+// TCP keepalive 在多数系统上要十几分钟才判定断链，Wi-Fi 换网 / 对端异常重启
+// （无 FIN/RST）时本机会长期显示"已连接"却发不出东西。这里主动每 20s 发 ping，
+// 超过 90s 没收到该对端任何包即视为掉线并断开，让 UDP 发现重新拉起来。
+func (n *Network) heartbeat() {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		var stale []string
+		var alive []string
+
+		n.mu.RLock()
+		for ip, p := range n.peers {
+			if p.conn == nil || !p.authed {
+				continue
+			}
+			if p.pongSeen && !p.lastRecv.IsZero() && now.Sub(p.lastRecv) > peerTimeout {
+				stale = append(stale, ip)
+			} else {
+				alive = append(alive, ip)
+			}
+		}
+		n.mu.RUnlock()
+
+		for _, ip := range stale {
+			log.Printf("心跳超时，断开对端: %s（%s 无响应）", ip, peerTimeout)
+			n.mu.RLock()
+			p := n.peers[ip]
+			n.mu.RUnlock()
+			if p != nil {
+				n.dropPeer(ip, p.conn)
+			}
+		}
+		for _, ip := range alive {
+			n.SendTo(ip, PacketHeader{Type: PacketPing}, nil)
+		}
+	}
 }
 
 func (n *Network) helloPacket() []byte {
@@ -86,7 +138,6 @@ func (n *Network) authPacket() []byte {
 }
 
 // ---------- UDP 发现 ----------
-
 // udpBroadcast 设备发现广播：
 //   - 存在未认证/未连接设备时，按动态间隔 + 随机退避发送 hello 快速发现
 //   - 所有对端均已认证在线时静默（不发广播，对内网零影响），仅保留监听；
@@ -296,9 +347,14 @@ func (n *Network) udpListen() {
 
 func (n *Network) dialPeer(ip string) {
 	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", TCPPort))
-	raw, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	d := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: tcpKeepAlive}
+	raw, err := d.Dial("tcp", addr)
 	if err != nil {
 		return
+	}
+	if tc, ok := raw.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(tcpKeepAlive)
 	}
 	cfg := tlsConfig()
 	if cfg == nil {
@@ -341,6 +397,8 @@ func (n *Network) tcpListen() {
 			continue
 		}
 		go func(raw *net.TCPConn) {
+			raw.SetKeepAlive(true)
+			raw.SetKeepAlivePeriod(tcpKeepAlive)
 			cfg := tlsConfig()
 			if cfg == nil {
 				raw.Close()
@@ -416,10 +474,15 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 
 		if !authed {
 			if h.Type == PacketAuth && h.Token == token {
+				if !n.approvePeer(conn, ip, h.DeviceName) {
+					log.Printf("用户拒绝设备接入，断开: %s @ %s", h.DeviceName, ip)
+					break
+				}
 				authed = true
 				n.mu.Lock()
 				if p := n.peers[ip]; p != nil {
 					p.authed = true
+					p.lastRecv = time.Now()
 					if p.name == "" {
 						p.name = h.DeviceName
 					}
@@ -438,11 +501,41 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 		if h.Token != token {
 			continue
 		}
+		// 心跳判定：记录最近一次收到该对端任意包的时间
+		n.mu.Lock()
+		if p := n.peers[ip]; p != nil && p.conn == conn {
+			p.lastRecv = time.Now()
+			if h.Type == PacketPong {
+				p.pongSeen = true
+			}
+		}
+		n.mu.Unlock()
 		if n.onPacket != nil {
 			n.onPacket(ip, &h, body)
 		}
 	}
 	n.dropPeer(ip, conn)
+}
+
+// approvePeer 陌生设备首次接入时的本机确认。
+// 两端默认共用内置密钥（开箱即用），因此 token 一致只能证明"对方装了 ClipSync"，
+// 不能证明是本机信任的设备。凡未在 config.json 的 pairedDevices 中的设备，
+// 首次接入必须先由本机用户点确认，之后持久化、不再打扰。
+// 返回 false 表示拒绝接入；requireConfirm 关闭或设备已受信任时直接放行。
+func (n *Network) approvePeer(conn net.Conn, ip, name string) bool {
+	if !getRequireConfirm() || isPaired(name) {
+		return true
+	}
+	// 弹窗可能停留很久，先解除未认证连接的 10s 读超时，
+	// 否则用户还在看对话框，连接就被判超时断开了
+	conn.SetReadDeadline(time.Time{})
+	ok := confirmPeer(name, ip)
+	if !ok {
+		return false
+	}
+	markPaired(name)
+	log.Printf("用户已确认接入: %s @ %s", name, ip)
+	return true
 }
 
 // dropPeer 按 (ip, conn) 匹配删除；若该 ip 的连接已被新连接替换则不动，避免误删新连接

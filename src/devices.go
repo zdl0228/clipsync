@@ -19,6 +19,30 @@ func init() {
 	pairedMu.Unlock()
 }
 
+// isPaired 该设备名是否已受信任（持久化在 config.json 的 pairedDevices 中）
+func isPaired(name string) bool {
+	if name == "" {
+		return false
+	}
+	pairedMu.Lock()
+	defer pairedMu.Unlock()
+	return pairedSet[name]
+}
+
+// markPaired 把设备标记为受信任并持久化；已存在则直接返回
+func markPaired(name string) {
+	if name == "" {
+		return
+	}
+	pairedMu.Lock()
+	already := pairedSet[name]
+	pairedSet[name] = true
+	pairedMu.Unlock()
+	if !already {
+		addPaired(name)
+	}
+}
+
 // 设备列表/发送目标子菜单槽位
 var (
 	devSlots  []*deviceSlot // 设备列表子菜单槽位
@@ -58,6 +82,17 @@ func updateAutoStartMenu(m *systray.MenuItem) {
 	}
 }
 
+// updateConfirmMenu 同步菜单显示的"接入需确认"状态
+func updateConfirmMenu(m *systray.MenuItem) {
+	if getRequireConfirm() {
+		m.SetTitle("接入需确认: 开")
+		m.Check()
+	} else {
+		m.SetTitle("接入需确认: 关")
+		m.Uncheck()
+	}
+}
+
 // updateDeviceMenus 刷新设备列表子菜单与发送文件目标子菜单
 func updateDeviceMenus() {
 	peers := netw.Peers()
@@ -92,7 +127,7 @@ func updateDeviceMenus() {
 			break
 		}
 		s := sendSlots[idx]
-		s.ip = p.IP
+		s.setIP(p.IP) // 与 getIP 同锁，避免与托盘点击回调竞争
 		t := p.Name
 		if t == "" {
 			t = p.IP

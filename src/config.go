@@ -28,9 +28,12 @@ func init() {
 
 type configFile struct {
 	Token       string   `json:"token"`
-	AutoStart   string   `json:"autoStart"`   // "on"/"off"，记录开机自启偏好
-	ContextMenu string   `json:"contextMenu"` // "on"/"off"，记录 Windows 右键发送偏好
+	AutoStart   string   `json:"autoStart"`     // "on"/"off"，记录开机自启偏好
+	ContextMenu string   `json:"contextMenu"`   // "on"/"off"，记录 Windows 右键发送偏好
 	Paired      []string `json:"pairedDevices"` // 已配对设备名，持久化后重连/重启不再重复提示"新配对"
+	// RequireConfirm "off" 时关闭"陌生设备接入需本机确认"，未设置视为开启。
+	// 默认开启：即使两端都用内置默认密钥，同网段的陌生设备也无法静默接入并读取剪贴板。
+	RequireConfirm string `json:"requireConfirm"`
 }
 
 // cfgMu 串行化对 config.json 的读写：托盘开关（开机启动/右键发送）在各自
@@ -93,6 +96,27 @@ func setContextMenuPref(v string) {
 	defer cfgMu.Unlock()
 	c := readConfigLocked()
 	c.ContextMenu = v
+	writeConfigLocked(c)
+}
+
+// getRequireConfirm 是否需要"陌生设备接入经本机确认"；未设置时默认开启，
+// 只有显式写入 "off" 才关闭
+func getRequireConfirm() bool {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	return readConfigLocked().RequireConfirm != "off"
+}
+
+// setRequireConfirm 记录接入确认偏好（不覆盖其它字段）
+func setRequireConfirm(on bool) {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	c := readConfigLocked()
+	if on {
+		c.RequireConfirm = "on"
+	} else {
+		c.RequireConfirm = "off"
+	}
 	writeConfigLocked(c)
 }
 
