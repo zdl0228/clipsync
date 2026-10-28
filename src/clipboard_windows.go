@@ -305,13 +305,18 @@ func (c *Clipboard) SetImageSafe(pngData []byte) error {
 	}
 	ptr, _, _ := procGlobalLock.Call(h)
 	if ptr == 0 {
+		procGlobalFree.Call(h) // 锁不住就把刚分配的内存还回去，否则每次传图都漏一块
 		return fmt.Errorf("GlobalLock failed")
 	}
 	copy((*[1 << 30]byte)(unsafe.Pointer(ptr))[:len(dib)], dib)
 	procGlobalUnlock.Call(h)
 
-	hh, _, _ := procSetClipboardData.Call(CF_DIB, h)
-	log.Printf("SetClipboardData 返回: %v", hh)
+	// 与 SetText 一致：成功时内存块所有权归系统，失败必须自己释放，
+	// 并且要把错误报出去——原实现忽略了返回值，剪贴板没写进去也当成功。
+	if r, _, _ := procSetClipboardData.Call(CF_DIB, h); r == 0 {
+		procGlobalFree.Call(h)
+		return fmt.Errorf("SetClipboardData(CF_DIB) failed")
+	}
 	c.mu.Lock()
 	c.lastSeq = getSeqNumber()
 	c.mu.Unlock()
@@ -412,17 +417,21 @@ func readClipboardText() (string, bool) {
 	return s, true
 }
 
+// ReadCurrent 读当前剪贴板内容。
+//
+// **先文字、后图片**：Excel / Word / 浏览器复制单元格或富文本时，剪贴板里
+// 同时挂着 CF_UNICODETEXT 和 CF_DIB（后者只是这段内容的视觉快照）。
+// 原实现先取图片，于是"复制几个字"，对端却收到一张截图 —— 逻辑上是错的。
+// 真正只有图片的场景（截图工具、复制图像）没有 CF_UNICODETEXT，仍然走图片分支。
 func (c *Clipboard) ReadCurrent() (string, []byte) {
-	// 先看有没有图片
-	if r, _, _ := procIsClipboardFormatAvailable.Call(CF_DIB); r != 0 {
-		if pngData := readClipboardImagePNG(); pngData != nil {
-			return "image/png", pngData
-		}
-	}
-	// 文字
 	if r, _, _ := procIsClipboardFormatAvailable.Call(CF_UNICODETEXT); r != 0 {
 		if s, ok := readClipboardText(); ok && s != "" {
 			return "text/plain", []byte(s)
+		}
+	}
+	if r, _, _ := procIsClipboardFormatAvailable.Call(CF_DIB); r != 0 {
+		if pngData := readClipboardImagePNG(); pngData != nil {
+			return "image/png", pngData
 		}
 	}
 	return "", nil

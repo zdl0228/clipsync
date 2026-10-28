@@ -60,9 +60,15 @@ func enableContextMenu() error {
 // disableContextMenu 删除右键菜单注册表项
 func disableContextMenu() error {
 	for _, scope := range ctxMenuKeys {
-		// 递归删除整个 ClipSyncSend 子树（含 command 子键）
-		err := registry.DeleteKey(registry.CURRENT_USER, ctxShellKey(scope))
-		if err != nil && err != registry.ErrNotExist {
+		base := ctxShellKey(scope)
+		// RegDeleteKey 只能删空键，遇到子键会返回 ERROR_KEY_HAS_CHILDREN。
+		// 原来直接删 ClipSyncSend 必定失败（它下面一定有 command），
+		// 于是"右键发送: 关"在 Windows 上其实一直没生效。
+		// 先删 command 子键，再删父键。
+		if err := registry.DeleteKey(registry.CURRENT_USER, base+`\command`); err != nil && err != registry.ErrNotExist {
+			return err
+		}
+		if err := registry.DeleteKey(registry.CURRENT_USER, base); err != nil && err != registry.ErrNotExist {
 			return err
 		}
 	}
@@ -71,8 +77,9 @@ func disableContextMenu() error {
 
 // isContextMenuEnabled 右键菜单是否已注册
 func isContextMenuEnabled() bool {
-	// 判断 `*\shell\ClipSyncSend` 是否存在即可（幂等注册，其余作用域一致）
-	k, err := registry.OpenKey(registry.CURRENT_USER, ctxShellKey(`*`), registry.QUERY_VALUE)
+	// 判断 `*\shell\ClipSyncSend\command` 是否存在即可：只看父键会把
+	// "键还在但 command 已被删掉"的空壳当成可用（点了没反应的半残状态）。
+	k, err := registry.OpenKey(registry.CURRENT_USER, ctxShellKey(`*`)+`\command`, registry.QUERY_VALUE)
 	if err != nil {
 		return false
 	}

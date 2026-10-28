@@ -58,12 +58,29 @@ func safeFileName(name string) string {
 	if n == "" {
 		return "received_file"
 	}
+	// Windows 的保留设备名（CON/PRN/AUX/NUL/COM1..9/LPT1..9）不能当文件名，
+	// 带扩展名也不行（CON.txt 同样打不开）。mac 发过来一个叫 con.txt 的文件时，
+	// 不收这道处理会在 Windows 上保存失败，用户只会看到"没收到"。
+	switch strings.ToUpper(strings.TrimSuffix(n, filepath.Ext(n))) {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		n = "_" + n
+	}
 	return n
 }
 
 // handleFileMeta 收到元信息：写临时文件，直接自动接收，完成后保存到桌面。
 // 按对端 IP 隔离接收状态，多设备同时发文件互不干扰。
 func handleFileMeta(ip string, h *PacketHeader) {
+	// 元信息必须自洽：负大小、0 块、超过上限的声明一律拒绝。
+	// 少了这道校验，chunkCount=0 会让"收到第一块即完成"成立（截断文件），
+	// 而超大的 total 会让接收状态和临时文件一直挂着。
+	if h.FileSize < 0 || h.FileSize > maxRecvFileBytes || h.ChunkCount <= 0 {
+		log.Printf("拒绝异常的 file_meta: from=%s size=%d chunks=%d", ip, h.FileSize, h.ChunkCount)
+		notify("ClipSync", "拒绝接收异常文件（元信息不合法）")
+		return
+	}
 	// 该对端上一个接收未完成则丢弃
 	clearRecv(ip)
 
@@ -112,11 +129,14 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 		}
 	}
 	rs.count++
-	// 完成条件：收到块数达标，或字节数达标（空文件/异常时兜底）
-	done := rs.count >= rs.chunkCount || rs.got >= rs.total
+	// 完成条件：字节数达标，或块数达标（空文件/对端提前结束时的兜底）。
+	// 快照成局部变量，避免下面在锁外读这些字段（clearRecv 可能并发改写状态）。
+	got, total, count := rs.got, rs.total, rs.count
+	done := got >= total || count >= rs.chunkCount
+	short := done && got < total // 块数够了但字节不够：对端提前结束，文件不完整
 	pct := 0
 	if rs.chunkCount > 0 {
-		pct = rs.count * 100 / rs.chunkCount
+		pct = count * 100 / rs.chunkCount
 		if pct > 100 {
 			pct = 100
 		}
@@ -133,6 +153,9 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 		return
 	}
 	if done {
+		if short {
+			log.Printf("接收不完整：%s 声明 %d 字节，实收 %d 字节（对端可能中断）", rs.fileName, total, got)
+		}
 		recvMu.Lock()
 		if recvs[ip] == rs {
 			delete(recvs, ip)

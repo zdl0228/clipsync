@@ -11,12 +11,19 @@ import (
 var (
 	pairedMu  sync.Mutex
 	pairedSet = map[string]bool{}
+	// pairedLoaded 懒加载标记。原来靠包级 init() 读配置，而 init 的先后
+	// 取决于文件名字典序（config.go 恰好在 devices.go 前面才没出事）——
+	// 一旦有人改名，这里就会在 configDir 还没设好时去读 config.json。
+	pairedLoaded bool
 )
 
-func init() {
-	pairedMu.Lock()
+// loadPairedOnce 首次配对时才读一次磁盘记录（此时 initConfig 一定已执行完）
+func loadPairedOnce() {
+	if pairedLoaded {
+		return
+	}
 	pairedSet = getPairedMap()
-	pairedMu.Unlock()
+	pairedLoaded = true
 }
 
 // firstPair 记下"该设备首次配对"（用于发通知，重连不重复提示），
@@ -26,6 +33,7 @@ func firstPair(name string) bool {
 		return false
 	}
 	pairedMu.Lock()
+	loadPairedOnce()
 	first := !pairedSet[name]
 	pairedSet[name] = true
 	pairedMu.Unlock()

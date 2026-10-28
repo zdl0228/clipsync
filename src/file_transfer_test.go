@@ -140,6 +140,10 @@ func TestSafeFileName(t *testing.T) {
 		"..":           "received_file",
 		"":             "received_file",
 		".":            "received_file",
+		// Windows 保留设备名：加前缀避开，否则 Windows 端保存必失败
+		"con.txt":  "_con.txt",
+		"COM1":     "_COM1",
+		"nul.json": "_nul.json",
 	}
 	for in, want := range cases {
 		if got := safeFileName(in); got != want {

@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -94,6 +95,12 @@ func onReady() {
 		case PacketFileData:
 			handleFileData(ip, h, body)
 		case PacketClipboard:
+			// 超大内容直接拒绝：写入剪贴板会卡住整个 UI，而且很可能是
+			// 对端误发（比如复制了一个巨大的图片）而不是真需要同步的东西
+			if len(body) > maxClipboardBytes {
+				log.Printf("忽略过大的剪贴板内容: %d 字节（上限 %d）", len(body), maxClipboardBytes)
+				return
+			}
 			clip.NoteIncoming(h.MimeType, body)
 			switch h.MimeType {
 			case "text/plain":
@@ -117,6 +124,12 @@ func onReady() {
 		mime, body := clip.ReadCurrent()
 		log.Printf("本地剪贴板: mime=%s, size=%d", mime, len(body))
 		if body == nil {
+			return
+		}
+		// 与接收侧同一条上限：几十 MB 的图片/文档整包打包会把内存顶上去，
+		// 而且这种内容本来也不适合走剪贴板同步
+		if len(body) > maxClipboardBytes {
+			log.Printf("剪贴板内容过大，跳过同步: %d 字节（上限 %d）", len(body), maxClipboardBytes)
 			return
 		}
 		netw.Send(PacketHeader{Type: PacketClipboard, MimeType: mime}, body)
@@ -246,7 +259,11 @@ func onReady() {
 		} else {
 			// 对端断开：清理该 IP 未完成的接收状态与进度计数，避免泄漏
 			clearRecv(ip)
-			mOnline.SetTitle("等待设备…")
+			// 多设备时不能因为一台掉线就把标题改回"等待设备…"——
+			// 另一台其实还连着，标题却显示没设备，会让人以为同步断了
+			if !netw.PeerOnline() {
+				mOnline.SetTitle("等待设备…")
+			}
 		}
 		updateDeviceMenus()
 	})
@@ -255,10 +272,19 @@ func onReady() {
 	go func() {
 		for range mSync.ClickedCh {
 			mime, body := clip.ReadCurrent()
-			if body != nil {
-				log.Printf("手动立即同步: mime=%s size=%d", mime, len(body))
-				netw.Send(PacketHeader{Type: PacketClipboard, MimeType: mime}, body)
+			if body == nil {
+				// 剪贴板里是文件、HTML 之类不支持的格式时也要说一句，
+				// 否则点「立即同步」看起来和没点一样
+				notify("ClipSync", "剪贴板里没有可同步的文本或图片")
+				continue
 			}
+			if !netw.PeerOnline() {
+				notify("ClipSync", "没有设备在线，无法同步")
+				continue
+			}
+			log.Printf("手动立即同步: mime=%s size=%d", mime, len(body))
+			netw.Send(PacketHeader{Type: PacketClipboard, MimeType: mime}, body)
+			notify("ClipSync", "已同步剪贴板内容")
 		}
 	}()
 
@@ -268,9 +294,23 @@ func onReady() {
 			if ip == "" {
 				continue
 			}
+			if net.ParseIP(ip) == nil {
+				dialog.Message("IP 地址格式不对：%s", ip).Error()
+				continue
+			}
 			log.Printf("手动直连: %s", ip)
 			netw.Dial(ip)
 			notify("ClipSync", fmt.Sprintf("正在直连：%s", ip))
+			// 拨号是异步的，3 秒后回报结果。原来只发"正在直连"就没了下文，
+			// 连不上时用户完全不知道是 IP 写错、对端没开还是密钥不一致。
+			go func(ip string) {
+				time.Sleep(3 * time.Second)
+				if netw.IsPeerAuthed(ip) {
+					notify("ClipSync", "已连上："+ip)
+					return
+				}
+				notify("ClipSync", "直连失败："+ip+"\n请确认对端已运行、IP 正确、两端密钥一致")
+			}(ip)
 		}
 	}()
 

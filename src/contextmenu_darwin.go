@@ -247,11 +247,6 @@ func serviceWorkflowDoc(exe string) string {
 `
 }
 
-// refreshServices 让新装的 workflow 立刻出现在"服务"菜单里。
-// pbs（粘贴板服务器）自己会扫描 ~/Library/Services 并重建服务列表，实测装完
-// 不用重启 Finder 就能用；不要顺手调 lsregister —— 它对 .workflow 这种
-// 非 app 包返回 -10811（kLSNotAnApplicationErr），每次启动都会在日志里刷错误。
-// ensureServiceEnabled macOS 默认把**所有第三方服务**的右键菜单项关掉：
 // pbs 的 NSServicesStatus 里每个非 Apple 服务都带 enabled_context_menu = false，
 // 用户在「系统设置 → 键盘 → 键盘快捷键 → 服务」勾选后才会变成 true。
 // 这一步不做，workflow 装得再对、pbs 也认得，右键「服务」里照样什么都没有
@@ -333,6 +328,10 @@ func ensureServiceEnabled() bool {
 	return true
 }
 
+// refreshServices 让新装的 workflow 立刻出现在"服务"菜单里。
+// pbs（粘贴板服务器）自己会扫描 ~/Library/Services 并重建服务列表，实测装完
+// 不用重启 Finder 就能用；不要顺手调 lsregister —— 它对 .workflow 这种
+// 非 app 包返回 -10811（kLSNotAnApplicationErr），每次启动都会在日志里刷错误。
 func refreshServices() {
 	runQuiet("/System/Library/CoreServices/pbs", "-update")
 	// pbs 扫描目录是异步的，刚写进去的 workflow 可能还没进 NSServicesStatus，
@@ -449,6 +448,9 @@ func disableContextMenu() error {
 		return err
 	}
 	log.Printf("已移除 Finder 服务: %s", wf)
+	// 包删了还得让 pbs 重新扫一遍，否则菜单里那一项会留到下次登录，
+	// 用户点了毫无反应（服务已不存在）
+	refreshServices()
 	return nil
 }
 

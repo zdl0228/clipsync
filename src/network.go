@@ -247,7 +247,7 @@ func (n *Network) SendTo(ip string, h PacketHeader, body []byte) {
 	n.mu.RLock()
 	p := n.peers[ip]
 	n.mu.RUnlock()
-	if p == nil || !p.authed {
+	if p == nil || !p.authed || p.conn == nil {
 		return
 	}
 	// 写操作设超时，避免对端不读导致永久阻塞
@@ -297,49 +297,63 @@ func (n *Network) udpListen() {
 		if err != nil {
 			continue
 		}
-		h, _, err := UnpackPacket(buf[:rlen])
-		// hello 只用于发现，不含敏感 token，无需校验 token
-		if err != nil || h.Type != PacketHello {
-			continue
-		}
 		ip := remote.IP.String()
-		// 收到本机自己发出的广播/回环包则跳过；用 IP 判断而非设备名比较，
-		// 避免两台主机名相同的设备互相漏发现
-		if isLocalIP(ip) {
-			continue
-		}
-
-		now := time.Now()
-		n.mu.Lock()
-		p, exists := n.peers[ip]
-		needDial := false
-		if !exists {
-			n.peers[ip] = &peer{ip: ip, name: h.DeviceName, lastDial: now}
-			needDial = true
-		} else {
-			if p.conn == nil || !p.authed {
-				// 节流：避免认证完成前每 2 秒重复拨号
-				if now.Sub(p.lastDial) > 5*time.Second {
-					p.lastDial = now
-					needDial = true
+		// 逐包 recover：UDP 端口是暴露给整个局域网的，任何一个畸形包引发的
+		// panic 都不该让发现循环整体退出（那等于永久失去自动发现能力）。
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("UDP 包处理 panic（已忽略）: %v", r)
 				}
-			}
-			if p.name == "" {
-				p.name = h.DeviceName
-			}
-		}
-		n.mu.Unlock()
+			}()
+			n.handleHello(buf[:rlen], ip)
+		}()
+	}
+}
 
-		// 新设备或连接已断开时重连
-		if needDial {
-			log.Printf("发现/重连对端: %s @ %s", h.DeviceName, ip)
-			// 通知广播协程立即临时广播一次，让新设备能发现本机
-			select {
-			case n.helloTrigger <- struct{}{}:
-			default:
+// handleHello 处理一个 UDP hello 包：登记对端，需要时发起 TCP 拨号。
+func (n *Network) handleHello(data []byte, ip string) {
+	h, _, err := UnpackPacket(data)
+	// hello 只用于发现，不含敏感 token，无需校验 token
+	if err != nil || h.Type != PacketHello {
+		return
+	}
+	// 收到本机自己发出的广播/回环包则跳过；用 IP 判断而非设备名比较，
+	// 避免两台主机名相同的设备互相漏发现
+	if isLocalIP(ip) {
+		return
+	}
+
+	now := time.Now()
+	n.mu.Lock()
+	p, exists := n.peers[ip]
+	needDial := false
+	if !exists {
+		n.peers[ip] = &peer{ip: ip, name: h.DeviceName, lastDial: now}
+		needDial = true
+	} else {
+		if p.conn == nil || !p.authed {
+			// 节流：避免认证完成前每 2 秒重复拨号
+			if now.Sub(p.lastDial) > 5*time.Second {
+				p.lastDial = now
+				needDial = true
 			}
-			go n.dialPeer(ip)
 		}
+		if p.name == "" {
+			p.name = h.DeviceName
+		}
+	}
+	n.mu.Unlock()
+
+	// 新设备或连接已断开时重连
+	if needDial {
+		log.Printf("发现/重连对端: %s @ %s", h.DeviceName, ip)
+		// 通知广播协程立即临时广播一次，让新设备能发现本机
+		select {
+		case n.helloTrigger <- struct{}{}:
+		default:
+		}
+		go n.dialPeer(ip)
 	}
 }
 
@@ -450,7 +464,7 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 			break
 		}
 		hlen := binary.BigEndian.Uint32(hl)
-		if hlen == 0 || hlen > 64*1024 {
+		if hlen == 0 || hlen > maxHeaderBytes {
 			break
 		}
 		hbuf := make([]byte, hlen)
@@ -463,7 +477,7 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 		}
 		var body []byte
 		if h.BodyLen > 0 {
-			if h.BodyLen > 128*1024*1024 {
+			if h.BodyLen > maxBodyBytes {
 				break
 			}
 			body = make([]byte, h.BodyLen)
@@ -496,8 +510,13 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 			break
 		}
 
+		// 已认证会话里仍然逐包校验密钥：对端改了密钥后，继续收它的包没有意义。
+		// 原来这里是 continue（丢包但留着连接），结果本机菜单一直显示"已连接"、
+		// 收发却全是空的，要等 90s 心跳超时才自愈 —— 那种"假在线"最难排查。
+		// 直接断开，让它按新密钥重新认证一次。
 		if h.Token != getToken() {
-			continue
+			log.Printf("对端密钥不符，断开重连: %s（对端可能刚改过密钥）", ip)
+			break
 		}
 		// 心跳判定：记录最近一次收到该对端任意包的时间
 		n.mu.Lock()
@@ -580,6 +599,9 @@ func (n *Network) Send(h PacketHeader, body []byte) {
 	n.mu.RUnlock()
 
 	for _, p := range targets {
+		if p.conn == nil {
+			continue
+		}
 		p.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 		if _, err := p.conn.Write(pkt); err != nil {
 			p.conn.SetWriteDeadline(time.Time{})

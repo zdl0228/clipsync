@@ -204,18 +204,21 @@ func (c *Clipboard) SetImageSafe(png []byte) error {
 }
 
 // 读当前剪贴板，返回 (mimeType, data)
+//
+// **先文字、后图片**：Excel / Word / 浏览器复制单元格或富文本时，剪贴板里
+// 同时有 public.utf8-plain-text 和 public.tiff（后者只是这段内容的视觉快照）。
+// 原实现优先图片，于是"复制几个字"对端收到一张截图 —— 逻辑上是错的。
+// 真正只有图片的场景（截图工具、右键复制图像）没有纯文本类型，仍走图片分支。
 func (c *Clipboard) ReadCurrent() (string, []byte) {
-	// 优先图片
 	var n C.int
-	if p := C.ReadPasteboardImagePNG(&n); p != nil {
-		defer C.free(p)
-		return "image/png", C.GoBytes(p, n)
-	}
-	// 文字
-	n = 0
 	if p := C.ReadPasteboardText(&n); p != nil {
 		defer C.free(unsafe.Pointer(p))
 		return "text/plain", C.GoBytes(unsafe.Pointer(p), n)
+	}
+	n = 0
+	if p := C.ReadPasteboardImagePNG(&n); p != nil {
+		defer C.free(p)
+		return "image/png", C.GoBytes(p, n)
 	}
 	return "", nil
 }
