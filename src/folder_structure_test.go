@@ -60,3 +60,22 @@ func TestFolderStructureProbe(t *testing.T) {
 	}
 	t.Log("同名文件自动改成 a(1).txt，未覆盖")
 }
+
+// TestReceiveWithoutDesktop 桌面目录本身不存在时（新账户 / 被删 / 外置卷卸载）
+// 接收要能自己把目录建出来，而不是直接失败
+func TestReceiveWithoutDesktop(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := os.Stat(filepath.Join(home, "Desktop")); !os.IsNotExist(err) {
+		t.Fatalf("前提不成立：Desktop 不该存在")
+	}
+	body := []byte("no desktop")
+	handleFileMeta("9.9.9.9", &PacketHeader{
+		Type: PacketFileMeta, FileName: "x.txt", FileSize: int64(len(body)), ChunkCount: 1,
+	})
+	handleFileData("9.9.9.9", &PacketHeader{Type: PacketFileData, ChunkIndex: 0, ChunkCount: 1}, body)
+	time.Sleep(600 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(home, "Desktop", "x.txt")); err != nil {
+		t.Fatalf("桌面不存在时应自动创建: %v", err)
+	}
+}

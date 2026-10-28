@@ -186,10 +186,6 @@ func (c *Clipboard) SetText(s string) error {
 	return nil
 }
 
-func (c *Clipboard) SetImage(png []byte) {
-	_ = c.SetImageSafe(png)
-}
-
 func (c *Clipboard) SetImageSafe(png []byte) error {
 	if len(png) == 0 {
 		return fmt.Errorf("empty png")
@@ -221,10 +217,4 @@ func (c *Clipboard) ReadCurrent() (string, []byte) {
 		return "image/png", C.GoBytes(p, n)
 	}
 	return "", nil
-}
-
-func (c *Clipboard) SuppressNext() {
-	c.mu.Lock()
-	c.suppress = true
-	c.mu.Unlock()
 }

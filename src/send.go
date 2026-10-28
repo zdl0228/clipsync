@@ -192,7 +192,9 @@ func sendFolderTo(ip string, dir string, quietFinal bool) {
 		return
 	}
 	if len(files) == 0 && len(dirs) == 0 {
-		notify("ClipSync", "该文件夹是空的")
+		// 完全空的文件夹：也得让对端建出这个目录，否则"发过去了"却什么都没有
+		netw.SendTo(ip, PacketHeader{Type: PacketFileDir, RelPath: relPathFor(clean, clean)}, nil)
+		notify("ClipSync", fmt.Sprintf("已发送空文件夹：%s", top))
 		return
 	}
 	log.Printf("开始发送文件夹: %s (共 %d 个文件, %d 个子目录)", clean, len(files), len(dirs))

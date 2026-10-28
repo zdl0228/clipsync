@@ -359,6 +359,34 @@ func (n *Network) handleHello(data []byte, ip string) {
 
 // ---------- TCP 连接 ----------
 
+// dupConnWindow 判定"重复拨号"的时间窗：两端同时发现彼此时会各自拨号，
+// 后到的那条会把先到的踢掉，表现就是连接抖动 + 重复的"已连接"通知。
+const dupConnWindow = 10 * time.Second
+
+// adoptConn 把新连接登记为某 IP 的当前连接，返回是否采纳。
+// 若该 IP 已有一条"近期还在收包"的认证连接，说明这条是重复拨号产生的，
+// 保留原连接、丢弃新的。旧连接若只是半死（对端进程已退出会有 FIN，走 dropPeer），
+// 这里的时间窗很短，不会拖延重连。
+func (n *Network) adoptConn(ip string, conn net.Conn) bool {
+	n.mu.Lock()
+	old := n.peers[ip]
+	if old != nil && old.authed && old.conn != nil && old.conn != conn &&
+		time.Since(old.lastRecv) < dupConnWindow {
+		n.mu.Unlock()
+		return false
+	}
+	name := ""
+	if old != nil {
+		name = old.name
+		if old.conn != nil && old.conn != conn {
+			old.conn.Close() // 关闭旧连接，避免泄漏
+		}
+	}
+	n.peers[ip] = &peer{ip: ip, name: name, conn: conn}
+	n.mu.Unlock()
+	return true
+}
+
 func (n *Network) dialPeer(ip string) {
 	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", TCPPort))
 	d := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: tcpKeepAlive}
@@ -384,16 +412,11 @@ func (n *Network) dialPeer(ip string) {
 	conn.SetDeadline(time.Time{})
 	conn.Write(n.authPacket())
 
-	n.mu.Lock()
-	if old := n.peers[ip]; old != nil {
-		if old.conn != nil && old.conn != conn {
-			old.conn.Close() // 关闭旧连接，避免泄漏
-		}
-		n.peers[ip] = &peer{ip: ip, name: old.name, conn: conn, authed: false}
-	} else {
-		n.peers[ip] = &peer{ip: ip, conn: conn, authed: false}
+	if !n.adoptConn(ip, conn) {
+		conn.Close()
+		log.Printf("已有活跃连接，丢弃本次重复拨号: %s", ip)
+		return
 	}
-	n.mu.Unlock()
 	log.Println("已建立连接(待认证):", ip)
 	go n.readLoop(ip, conn)
 }
@@ -427,16 +450,11 @@ func (n *Network) tcpListen() {
 			conn.SetDeadline(time.Time{})
 			conn.Write(n.authPacket())
 			ip := raw.RemoteAddr().(*net.TCPAddr).IP.String()
-			n.mu.Lock()
-			if old := n.peers[ip]; old != nil {
-				if old.conn != nil && old.conn != conn {
-					old.conn.Close() // 关闭旧连接，避免泄漏
-				}
-				n.peers[ip] = &peer{ip: ip, name: old.name, conn: conn, authed: false}
-			} else {
-				n.peers[ip] = &peer{ip: ip, conn: conn, authed: false}
+			if !n.adoptConn(ip, conn) {
+				conn.Close()
+				log.Printf("已有活跃连接，丢弃重复接入: %s", ip)
+				return
 			}
-			n.mu.Unlock()
 			go n.readLoop(ip, conn)
 		}(raw)
 	}
@@ -490,9 +508,12 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 			// 密钥相同即配对成功：不再有"陌生设备需本机确认"这一步，
 			// 谁能收到剪贴板完全由密钥决定，所以要改成自己的密钥。
 			if h.Type == PacketAuth && h.Token == getToken() {
-				authed = true
 				n.mu.Lock()
-				if p := n.peers[ip]; p != nil {
+				p := n.peers[ip]
+				current := p != nil && p.conn == conn
+				became := false
+				if current {
+					became = !p.authed
 					p.authed = true
 					p.lastRecv = time.Now()
 					if p.name == "" {
@@ -500,7 +521,16 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 					}
 				}
 				n.mu.Unlock()
-				if n.onPeerChange != nil {
+				// 两端同时发现彼此时会各自拨号，形成同一对 IP 之间的两条连接，
+				// 后注册的那条把前一条替换掉。旧连接的 readLoop 还会收到 auth，
+				// 若照着往下走就会把"已被替换的连接"当成在线、并且重复发一次
+				// "已连接/已配对"通知。这里直接断开这条多余的连接。
+				if !current {
+					log.Printf("认证通过但连接已被新连接替换，关闭多余连接: %s", ip)
+					break
+				}
+				authed = true
+				if became && n.onPeerChange != nil {
 					n.onPeerChange(ip, h.DeviceName, true)
 				}
 				log.Println("认证通过:", ip, h.DeviceName)

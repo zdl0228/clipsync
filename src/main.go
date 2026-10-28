@@ -251,11 +251,16 @@ func onReady() {
 	netw.OnPeerChange(func(ip string, peer string, online bool) {
 		if online {
 			mOnline.SetTitle("已连接: " + peer)
-			// 首次配对发系统通知；重连同一设备只轻量提示
-			if firstPair(peer, ip) {
+			// 首次配对发系统通知；重连同一设备只轻量提示。
+			// 连接被替换/网络抖动会在几秒内连着触发两次上线，通知去抖挡掉重复的。
+			key := peer + "@" + ip
+			switch {
+			case !shouldNotifyOnline(key):
+				log.Printf("已连接设备（抑制重复通知）: %s", peer)
+			case firstPair(peer, ip):
 				log.Printf("配对新设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已配对新设备：%s", peer))
-			} else {
+			default:
 				log.Printf("已连接设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已连接设备：%s", peer))
 			}

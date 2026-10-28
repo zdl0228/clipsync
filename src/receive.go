@@ -233,19 +233,35 @@ func finishReceive(rs *recvState) {
 	rs.tmpFile.Close()
 	progressEnd()
 
+	// 删除失败时的临时文件：不留垃圾，也不留半截文件
+	drop := func(reason string) {
+		if err := os.Remove(rs.tmpPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("清理临时文件失败 %s: %v", rs.tmpPath, err)
+		}
+		notify("ClipSync", reason)
+	}
+
+	// 桌面目录本身可能不存在（新建账户、被手动删掉、外置卷卸载），
+	// 不先建好，后面 O_EXCL 占位会直接 ENOENT，文件就白收了
 	dir := desktopDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("创建桌面目录失败: %v", err)
+		drop(fmt.Sprintf("文件接收失败，无法写入桌面：%v", err))
+		return
+	}
 	if rs.relDir != "" {
-		dir = filepath.Join(desktopDir(), rs.relDir)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		sub := filepath.Join(dir, rs.relDir)
+		if err := os.MkdirAll(sub, 0o755); err != nil {
 			// 目录建不出来就退回桌面，至少文件不丢
 			log.Printf("创建接收目录失败，改存桌面: %v", err)
-			dir = desktopDir()
+		} else {
+			dir = sub
 		}
 	}
 	final, err := reservePath(dir, rs.fileName)
 	if err != nil {
 		log.Printf("分配接收文件名失败: %v", err)
-		notify("ClipSync", fmt.Sprintf("文件接收失败，无法保存到桌面：%v", err))
+		drop(fmt.Sprintf("文件接收失败，无法保存到桌面：%v", err))
 		return
 	}
 	if err := os.Rename(rs.tmpPath, final); err != nil {
@@ -254,7 +270,7 @@ func finishReceive(rs *recvState) {
 		if err2 := copyFile(rs.tmpPath, final); err2 != nil {
 			log.Printf("拷贝保存也失败: %v", err2)
 			os.Remove(final) // 清掉占位符，别留个空文件误导用户
-			notify("ClipSync", fmt.Sprintf("文件接收失败，保存到桌面出错：%v", err2))
+			drop(fmt.Sprintf("文件接收失败，保存到桌面出错：%v", err2))
 			return
 		}
 	}

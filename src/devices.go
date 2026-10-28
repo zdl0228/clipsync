@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	"github.com/getlantern/systray"
 )
@@ -52,6 +53,25 @@ var (
 	devSlots  []*deviceSlot // 设备列表子菜单槽位
 	sendSlots []*deviceSlot // 发送文件目标子菜单槽位
 )
+
+// "已连接"通知去抖：两端同时发现彼此时会互相拨号，连接被替换一次就会触发
+// 两次 onPeerChange(online=true)，用户连着收到两条一模一样的横幅。
+// 同一条设备在 5s 内只提示一次；菜单标题不受影响，照常更新。
+var (
+	onlineNotifyMu sync.Mutex
+	onlineNotifyAt = map[string]time.Time{}
+)
+
+// shouldNotifyOnline 判断本次上线是否值得发通知
+func shouldNotifyOnline(key string) bool {
+	onlineNotifyMu.Lock()
+	defer onlineNotifyMu.Unlock()
+	if t, ok := onlineNotifyAt[key]; ok && time.Since(t) < 5*time.Second {
+		return false
+	}
+	onlineNotifyAt[key] = time.Now()
+	return true
+}
 
 // maxSlots 托盘设备子菜单最大槽位数
 const maxSlots = 10

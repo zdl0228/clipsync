@@ -280,10 +280,6 @@ func dibToPng(dib []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func (c *Clipboard) SetImage(pngData []byte) {
-	_ = c.SetImageSafe(pngData)
-}
-
 func (c *Clipboard) SetImageSafe(pngData []byte) error {
 	dib, err := pngToDib(pngData)
 	if err != nil {
@@ -435,10 +431,4 @@ func (c *Clipboard) ReadCurrent() (string, []byte) {
 		}
 	}
 	return "", nil
-}
-
-func (c *Clipboard) SuppressNext() {
-	c.mu.Lock()
-	c.suppress = true
-	c.mu.Unlock()
 }
