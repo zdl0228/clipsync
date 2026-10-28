@@ -338,13 +338,24 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
 	out, err := os.Create(dst)
 	if err != nil {
+		in.Close()
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
+	_, err = io.Copy(out, in)
+	// 必须先关闭两个句柄再删源文件：Windows 上删除仍被打开的文件会报
+	// ERROR_SHARING_VIOLATION（共享冲突），导致临时文件永久残留；原实现用
+	// defer 关闭，os.Remove(src) 执行时 in 还开着，Windows 上这一步必然失败。
+	if cerr := in.Close(); err == nil {
+		err = cerr
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		// 拷贝失败：清掉半截目标，别留一个打不开的文件误导用户
+		os.Remove(dst)
 		return err
 	}
 	os.Remove(src)
