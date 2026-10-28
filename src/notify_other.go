@@ -9,6 +9,7 @@ import (
 )
 
 // win_notify.png 是放大剪贴板版图标，用作 Windows 通知头像
+//
 //go:embed win_notify.png
 var winNotifyIcon []byte
 
@@ -17,3 +18,12 @@ var winNotifyIcon []byte
 func notifyOS(title, msg string) error {
 	return beeep.Notify(title, msg, winNotifyIcon)
 }
+
+// notifyPrepare Windows 的 Toast 不需要预先授权
+func notifyPrepare() {}
+
+// notifyPermission Windows 没有可查询的单点授权状态，返回空表示无需展示
+func notifyPermission() string { return "" }
+
+// openNotificationSettings 非 macOS 平台没有统一的"通知设置"深链
+func openNotificationSettings() {}

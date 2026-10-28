@@ -72,6 +72,13 @@ func onReady() {
 	netw = NewNetwork(name)
 	clip = NewClipboard()
 
+	// 通知授权必须在启动时就请求：等到第一次发通知再请求，异步授权来不及，
+	// 那条通知会直接丢掉，之后也再没有机会弹授权框
+	notifyPrepare()
+	if st := notifyPermission(); st != "" {
+		log.Printf("通知权限: %s", st)
+	}
+
 	netw.OnPacket(func(ip string, h *PacketHeader, body []byte) {
 		log.Printf("收到包: from=%s type=%s mime=%s size=%d", ip, h.Type, h.MimeType, len(body))
 		switch h.Type {
@@ -175,6 +182,7 @@ func onReady() {
 		systray.AddSeparator()
 	}
 	mAutoStart := systray.AddMenuItem("开机启动: 关", "")
+	mNotify := systray.AddMenuItem("测试通知…", "")
 	mQuit := systray.AddMenuItem("退出", "")
 
 	// 发送子菜单：点击目标设备 → 多选文件/文件夹 → 逐个发送到该设备
@@ -284,6 +292,16 @@ func onReady() {
 	}
 	updateAutoStartMenu(mAutoStart)
 
+	// 权限被拒时把状态写在菜单标题上——否则用户只会觉得"点了没反应"，
+	// 根本想不到是系统把通知拦了
+	go func() {
+		switch st := notifyPermission(); st {
+		case "", "已允许", "临时允许":
+		default:
+			mNotify.SetTitle("通知已被拒绝 · 点此修复")
+		}
+	}()
+
 	// 拖文件到菜单栏图标 → 发送给所有已认证在线设备
 	systray.SetOnDrop(onDropFiles)
 
@@ -301,6 +319,25 @@ func onReady() {
 			setAutoStartPref(v)
 			log.Printf("设置开机自启: %s", map[bool]string{true: "开", false: "关"}[next])
 			updateAutoStartMenu(mAutoStart)
+		}
+	}()
+
+	// 测试通知：既然通知是发送/接收的唯一反馈，就得有个自检入口。
+	// 点一下能立刻知道通道通不通，权限被拒时直接给出修复路径。
+	go func() {
+		for range mNotify.ClickedCh {
+			st := notifyPermission()
+			notify("ClipSync", "如果你看到这条通知，说明通知通道正常")
+			log.Printf("测试通知已发送，权限状态: %s", st)
+			switch st {
+			case "", "已允许", "临时允许":
+				// 权限没问题，不弹框打扰
+			default:
+				openNotificationSettings()
+				dialog.Message("通知权限：%s\n\n已在系统设置里打开「通知」，找到 ClipSync，"+
+					"开启「允许通知」，样式选「横幅」或「提醒」。\n\n"+
+					"改完后再点一次「测试通知…」确认。", st).Info()
+			}
 		}
 	}()
 
