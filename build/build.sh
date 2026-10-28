@@ -50,8 +50,9 @@ if [ -z "$VER" ]; then
   echo "错误：无法从 src/version.go 读取 appVersion"
   exit 1
 fi
-# 构建标识：时间戳，写进 -ldflags，让托盘/日志能区分同一版本号的多次构建
-BUILD_STAMP="$(date +%Y%m%d-%H%M)"
+# 构建标识：日期，写进 -ldflags，让托盘/日志能区分同一版本号的多次构建。
+# 只到天不带时分——它要显示在托盘菜单里，"20261028-2142" 那串太长。
+BUILD_STAMP="$(date +%Y%m%d)"
 VER_MAJOR="$(echo "$VER" | cut -d. -f1)"
 VER_MINOR="$(echo "$VER" | cut -d. -f2)"
 VER_PATCH="$(echo "$VER" | cut -d. -f3)"
@@ -107,10 +108,9 @@ if [ -d "$APP" ] && command -v hdiutil >/dev/null 2>&1; then
   if [ -f "$PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$PLIST" 2>/dev/null \
       || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VER" "$PLIST"
-    # CFBundleVersion 是构建号。Apple 要求它只能由数字和点组成（1~4 段），
-    # 所以把时间戳的连字符去掉写成 202610282142；日志里的 appBuild 仍保留
-    # 20261028-2142 的可读形式，两者数字部分一致，对照时不会错。
-    PLIST_BUILD="${BUILD_STAMP/-/}"
+    # CFBundleVersion 是构建号。Apple 要求它只能由数字和点组成（1~4 段）；
+    # BUILD_STAMP 本身就是纯数字日期（20261028），可以直接用。
+    PLIST_BUILD="$BUILD_STAMP"
     /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $PLIST_BUILD" "$PLIST" 2>/dev/null \
       || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $PLIST_BUILD" "$PLIST"
     echo ">>> Info.plist 版本号: ${VER}（构建 ${BUILD_STAMP}）"

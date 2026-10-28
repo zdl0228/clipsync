@@ -28,33 +28,44 @@ func TestAppVersionFormat(t *testing.T) {
 	}
 }
 
-// 界面上的版本串只带版本号本身，不能混进构建时间戳。
-// 这是用户明确要求过的：托盘菜单里 "版本 v1.0.0 build 20261028-2136" 太长。
-func TestVersionTextIsShort(t *testing.T) {
+// 菜单里显示 "版本 v1.0 build 20261028"：版本号 + 日期，不带时分。
+func TestVersionLabel(t *testing.T) {
 	old := appBuild
 	defer func() { appBuild = old }()
 
-	appBuild = "20261028-2136"
-	if got := versionText(); got != "v"+appVersion {
-		t.Fatalf("versionText = %q, want %q（不能带 build 号）", got, "v"+appVersion)
+	appBuild = ""
+	if got := versionLabel(); got != "v"+appVersion {
+		t.Fatalf("无构建号时 versionLabel = %q, want %q", got, "v"+appVersion)
 	}
-	if strings.Contains(versionText(), appBuild) {
-		t.Fatalf("versionText = %q 混进了构建标识 %q", versionText(), appBuild)
+
+	appBuild = "20261028"
+	want := "v" + appVersion + " build 20261028"
+	if got := versionLabel(); got != want {
+		t.Fatalf("versionLabel = %q, want %q", got, want)
 	}
-	// 菜单项整体也要短，太长的菜单在托盘里会被截断
-	if n := len([]rune("版本 " + versionText())); n > 12 {
-		t.Fatalf("菜单项「版本 %s」共 %d 字，太长", versionText(), n)
+	// 菜单项整体要短，否则托盘里会被系统截断
+	menu := "版本 " + versionLabel()
+	if n := len([]rune(menu)); n > 26 {
+		t.Fatalf("菜单项「%s」共 %d 字，太长", menu, n)
+	}
+	// 不能出现时分：出现过 "-2142" 这种尾巴，用户嫌太长
+	if strings.Contains(menu, "-") {
+		t.Fatalf("菜单项「%s」不该带时分连字符", menu)
+	}
+	// versionText 保持纯版本号，别把构建号混进去
+	if strings.Contains(versionText(), "build") {
+		t.Fatalf("versionText = %q 不该含 build", versionText())
 	}
 }
 
-// 排查用的详情串反过来必须带构建标识，否则同一版本号的多次构建分不清。
-func TestVersionDetailHasBuild(t *testing.T) {
+// 排查用的详情串必须带构建日期和平台架构。
+func TestVersionDetail(t *testing.T) {
 	old := appBuild
 	defer func() { appBuild = old }()
 
-	appBuild = "20261028-2136"
+	appBuild = "20261028"
 	d := versionDetail()
-	for _, sub := range []string{appVersion, "build", "20261028-2136"} {
+	for _, sub := range []string{appVersion, "build", "20261028"} {
 		if !strings.Contains(d, sub) {
 			t.Fatalf("versionDetail = %q，缺少 %q", d, sub)
 		}
@@ -62,6 +73,6 @@ func TestVersionDetailHasBuild(t *testing.T) {
 
 	appBuild = ""
 	if d := versionDetail(); !strings.Contains(d, "本地构建") {
-		t.Fatalf("无构建标识时 versionDetail = %q，应标注本地构建", d)
+		t.Fatalf("无构建号时 versionDetail = %q，应标注本地构建", d)
 	}
 }

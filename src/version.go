@@ -11,29 +11,41 @@ import (
 // Info.plist、Windows 版本资源和 dmg 卷名，避免几处各写一份对不上。
 //
 // 格式：主版本.次版本，允许再加一段修订号（如 1.0.2）。不要带 "v" 前缀，v 在展示时补。
-// 界面上只显示这个值（"版本 v1.0"），构建时间戳不进菜单——那一串 20261028-2136
-// 挂在托盘里太长太吵，排查时看日志或 --version 就够。
 const appVersion = "1.0"
 
-// appBuild 是构建标识（时间戳），由 -ldflags -X main.appBuild=xxx 注入；
+// appBuild 是构建日期（YYYYMMDD），由 -ldflags -X main.appBuild=xxx 注入；
 // 源码里保持空，方便直接 go run 调试。
+//
+// 只到天、不带时分：它要显示在托盘菜单里，带上时分那串 "20261028-2142" 太长。
+// 同一天编多次会得到同一个构建号，这是可以接受的——真正需要区分到分钟的场景
+// （比对两个包是不是同一次编的）看文件时间戳就够了。
 var appBuild = ""
 
-// versionText 是界面上显示的版本串，例如 "v1.0"。
-// 托盘菜单、tooltip 都用它——故意不含构建号，避免菜单项过长。
+// versionText 只返回版本号本身，例如 "v1.0"。
+// 用在需要"纯版本"的地方，不掺构建日期。
 func versionText() string {
 	return "v" + appVersion
 }
 
-// versionDetail 是排查用的完整信息：版本、平台架构、构建标识。
-// 只出现在 --version 输出和启动日志里，不进界面。
+// versionLabel 是界面上显示的完整标签，例如 "v1.0 build 20261028"。
+// 托盘菜单、tooltip 用它——带上构建日期，两台机器装的包不一样时一眼能看出来。
+// appBuild 为空（本地 go run）时自动退化成 "v1.0"。
+func versionLabel() string {
+	if appBuild == "" {
+		return versionText()
+	}
+	return versionText() + " build " + appBuild
+}
+
+// versionDetail 是排查用的完整信息：版本、构建日期、平台架构。
+// 只出现在 --version 输出和启动日志里。
 //
 // GOOS/GOARCH 一定要带：Windows 的 exe 是从 macOS 交叉编译出来的，
 // 出问题时"这是哪个平台的包"经常是第一个要问的。
 func versionDetail() string {
-	s := fmt.Sprintf("ClipSync %s (%s/%s)", versionText(), runtime.GOOS, runtime.GOARCH)
+	s := fmt.Sprintf("ClipSync %s (%s/%s)", versionLabel(), runtime.GOOS, runtime.GOARCH)
 	if appBuild == "" {
-		return s + " 本地构建"
+		s += " 本地构建"
 	}
-	return s + " build " + appBuild
+	return s
 }

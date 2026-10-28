@@ -164,7 +164,7 @@ func onReady() {
 	} else {
 		systray.SetIcon(iconBytes)
 	}
-	systray.SetTooltip(fmt.Sprintf("ClipSync %s - %s", versionText(), name))
+	systray.SetTooltip(fmt.Sprintf("ClipSync %s - %s", versionLabel(), name))
 
 	mOnline := systray.AddMenuItem("等待设备…", "")
 	mOnline.Disable()
@@ -215,7 +215,7 @@ func onReady() {
 	systray.AddSeparator()
 	// 版本号常驻菜单底部（禁用态，点击无反应）：两台机器版本不一致时，
 	// 一眼就能看出是哪台没更新，比翻日志或看文件时间靠谱
-	mVersion := systray.AddMenuItem("版本 "+versionText(), "")
+	mVersion := systray.AddMenuItem("版本 "+versionLabel(), "")
 	mVersion.Disable()
 	mQuit := systray.AddMenuItem("退出", "")
 
