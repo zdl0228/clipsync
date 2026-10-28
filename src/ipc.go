@@ -47,7 +47,7 @@ func runSendHelper(paths []string) {
 
 	// 首行 token，之后每行一个路径；token 由主进程校验身份
 	w := bufio.NewWriter(conn)
-	fmt.Fprintln(w, token)
+	fmt.Fprintln(w, getToken())
 	for _, p := range paths {
 		fmt.Fprintln(w, p)
 	}
@@ -113,7 +113,7 @@ func ipcHandle(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	if line != token {
+	if line != getToken() {
 		log.Printf("IPC token 校验失败，拒绝")
 		fmt.Fprintln(conn, "ERR:token")
 		return

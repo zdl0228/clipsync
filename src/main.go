@@ -38,6 +38,12 @@ func main() {
 			log.Printf("PANIC: %v", r)
 		}
 	}()
+	// 无界面改密钥：弹窗不可用（远程桌面、精简系统、被安全软件限制）时的兜底，
+	// 也方便脚本化批量部署。用法：ClipSync.exe --set-token 我的密钥
+	if len(os.Args) > 2 && os.Args[1] == "--set-token" {
+		runSetToken(os.Args[2])
+		return
+	}
 	log.Println("=== ClipSync 启动 ===")
 	systray.Run(onReady, onExit)
 }
@@ -365,6 +371,9 @@ func onReady() {
 	go func() {
 		for range mToken.ClickedCh {
 			cur := getToken()
+			// 先记一行日志：万一输入框没弹出来，靠这行就能区分"菜单没触发"
+			// 和"弹窗环节失败"，不用再猜
+			log.Printf("打开配对密钥输入框（当前 %d 个字符）", len([]rune(cur)))
 			v := inputText("ClipSync 配对密钥",
 				"当前配对密钥（可改成自己的）。两台设备填写相同的密钥即可自动配对，"+
 					"不同则无法连接。4~64 个字符，不含空格与引号。", cur)
@@ -402,6 +411,27 @@ func onReady() {
 	}()
 
 	log.Printf("ClipSync 已启动 (Go, %s)", runtime.GOOS)
+}
+
+// runSetToken 处理 `--set-token <密钥>`：校验后直接写盘并提示结果。
+// 写的是 config.json，正在运行的托盘进程内存里仍是旧值，必须重启才生效，
+// 所以提示里要说清楚，否则用户会以为没成功（连接依旧认证失败）。
+func runSetToken(raw string) {
+	nv, err := normalizeToken(raw)
+	if err != nil {
+		log.Printf("--set-token 未通过校验: %v", err)
+		dialog.Message("密钥无效：%v", err).Error()
+		return
+	}
+	if err := saveToken(nv); err != nil {
+		log.Printf("--set-token 保存失败: %v", err)
+		dialog.Message("保存失败：%v", err).Error()
+		return
+	}
+	log.Printf("--set-token 已保存（%d 个字符）", len([]rune(nv)))
+	dialog.Message("配对密钥已保存（%d 个字符）。\n\n"+
+		"托盘里的 ClipSync 如果正在运行，需要先「退出」再重新打开，新密钥才生效。"+
+		"\n另一台设备记得填同一个密钥。", len([]rune(nv))).Info()
 }
 
 func onExit() {

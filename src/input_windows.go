@@ -3,11 +3,38 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/sqweek/dialog"
 )
+
+// createNoWindow 让子进程不创建控制台窗口（CREATE_NO_WINDOW）。
+//
+// 这里不能用 SysProcAttr.HideWindow：它设置的是 STARTUPINFO.wShowWindow = SW_HIDE，
+// 而 WinForms 窗体首次显示走 SW_SHOWDEFAULT，会继承这个值 —— 于是 powershell
+// 进程起来了、脚本也执行了，窗口却完全不可见。用户看到的就是"点了没反应"。
+// CREATE_NO_WINDOW 只是不分配控制台，不影响后续自建窗体，是隐藏控制台的正确姿势。
+const createNoWindow = 0x08000000
+
+// psRun 以 STA 模式执行 PowerShell 脚本并返回 UTF-8 标准输出（已去首尾空白与 BOM）。
+// 失败时把 stderr 一并带出来，否则只看 "exit status 1" 根本不知道脚本错在哪。
+func psRun(script string) (string, error) {
+	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow}
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", err
+	}
+	s := strings.TrimLeft(string(out), "\uFEFF")
+	return strings.TrimSpace(s), nil
+}
 
 // psQuote 把文本包成 PowerShell 单引号字符串（内部单引号双写）
 func psQuote(s string) string {
@@ -27,22 +54,23 @@ func inputText(title, prompt, def string) string {
 		"$form.FormBorderStyle = 'FixedDialog'\n" +
 		"$form.MinimizeBox = $false\n" +
 		"$form.MaximizeBox = $false\n" +
-		"$form.Size = New-Object System.Drawing.Size(470, 200)\n" +
+		"$form.TopMost = $true\n" +
+		"$form.Size = New-Object System.Drawing.Size(480, 220)\n" +
 		"$label = New-Object System.Windows.Forms.Label\n" +
 		"$label.Location = New-Object System.Drawing.Point(14, 12)\n" +
-		"$label.Size = New-Object System.Drawing.Size(430, 38)\n" +
+		"$label.Size = New-Object System.Drawing.Size(440, 56)\n" +
 		"$label.Text = " + psQuote(prompt) + "\n" +
 		"$box = New-Object System.Windows.Forms.TextBox\n" +
-		"$box.Location = New-Object System.Drawing.Point(14, 56)\n" +
-		"$box.Size = New-Object System.Drawing.Size(430, 24)\n" +
+		"$box.Location = New-Object System.Drawing.Point(14, 72)\n" +
+		"$box.Size = New-Object System.Drawing.Size(440, 24)\n" +
 		"$box.Text = " + psQuote(def) + "\n" +
 		"$ok = New-Object System.Windows.Forms.Button\n" +
 		"$ok.Text = '确定'\n" +
-		"$ok.Location = New-Object System.Drawing.Point(270, 100)\n" +
+		"$ok.Location = New-Object System.Drawing.Point(280, 118)\n" +
 		"$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK\n" +
 		"$cancel = New-Object System.Windows.Forms.Button\n" +
 		"$cancel.Text = '取消'\n" +
-		"$cancel.Location = New-Object System.Drawing.Point(360, 100)\n" +
+		"$cancel.Location = New-Object System.Drawing.Point(370, 118)\n" +
 		"$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel\n" +
 		"$form.Controls.Add($label)\n" +
 		"$form.Controls.Add($box)\n" +
@@ -50,17 +78,15 @@ func inputText(title, prompt, def string) string {
 		"$form.Controls.Add($cancel)\n" +
 		"$form.AcceptButton = $ok\n" +
 		"$form.CancelButton = $cancel\n" +
-		"$form.Add_Shown({ $box.SelectAll(); $box.Focus() })\n" +
+		"$form.Add_Shown({ $form.Activate(); $box.SelectAll(); $box.Focus() })\n" +
 		"if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $box.Text } else { '' }"
-	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", ps)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := psRun(ps)
 	if err != nil {
 		log.Printf("输入框执行失败: %v", err)
+		dialog.Message("弹出输入框失败：%v", err).Error()
 		return ""
 	}
-	s := strings.TrimSpace(string(out))
-	return strings.TrimPrefix(s, "\uFEFF") // 去掉可能的 BOM
+	return out
 }
 
 // inputIP 弹出输入框获取对端直连 IP；取消或为空返回 ""
@@ -82,17 +108,19 @@ func selectPaths() []string {
 		"$d.RestoreDirectory = $true\n" +
 		"$r = $d.ShowDialog()\n" +
 		"if ($r -eq [System.Windows.Forms.DialogResult]::OK) { $d.FileNames -join \"`n\" } else { \"\" }"
-	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", ps)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := psRun(ps)
 	if err != nil {
 		log.Printf("文件选择面板执行失败: %v", err)
+		dialog.Message("打开文件选择框失败：%v", err).Error()
+		return nil
+	}
+	if out == "" {
+		log.Println("文件选择面板未返回结果（可能用户取消）")
 		return nil
 	}
 	var paths []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		line = strings.TrimPrefix(line, "\uFEFF") // 去掉可能的 BOM
 		if line != "" {
 			paths = append(paths, line)
 		}
@@ -150,17 +178,15 @@ func choosePeers(opts []string) []string {
 		"  $sel = @($list.CheckedItems)\n" +
 		"  if ($sel.Count -gt 0) { $sel -join ([string][char]10) } else { '' }\n" +
 		"} else { '' }"
-	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", ps)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+	out, err := psRun(ps)
 	if err != nil {
 		log.Printf("目标设备选择框执行失败: %v", err)
+		dialog.Message("打开目标设备选择框失败：%v", err).Error()
 		return nil
 	}
 	var res []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
-		line = strings.TrimPrefix(line, "\uFEFF") // 去掉可能的 BOM
 		if line != "" {
 			res = append(res, line)
 		}
