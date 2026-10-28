@@ -164,6 +164,74 @@ func TestOpaqueImageHasNoTransparency(t *testing.T) {
 	}
 }
 
+func TestOpaqueImageRoundTrip(t *testing.T) {
+	// 不透明图（普通截图、照片）走的是"不写 CF_DIBV5"的那条路径。
+	// 这条路径必须和改 alpha 之前完全等价——像素一个不差、alpha 全 255，
+	// 而且不能被"全 0 alpha 视为不透明"的启发式误伤到（它本来就不该介入）。
+	src := image.NewNRGBA(image.Rect(0, 0, 5, 3))
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 5; x++ {
+			src.SetNRGBA(x, y, color.NRGBA{
+				R: uint8(20 + x*45), G: uint8(30 + y*80), B: uint8(10 + x*y*20), A: 255,
+			})
+		}
+	}
+	if hasTransparency(src) {
+		t.Fatal("不透明图被判为带透明，会白写一份 CF_DIBV5")
+	}
+
+	dib := nrgbaToDibV3(src)
+	// 头部必须是老格式：40 字节头 + BI_RGB，兼容性最好
+	if got := le32u(dib[0:4]); got != dibHeaderSizeV3 {
+		t.Fatalf("biSize = %d, want %d", got, dibHeaderSizeV3)
+	}
+	if got := le32u(dib[16:20]); got != biRGB {
+		t.Fatalf("biCompression = %d, want BI_RGB", got)
+	}
+	// alpha 字节必须全 255（而不是 0）——GDI 忽略它，但会读它的程序要拿到不透明
+	for i := dibHeaderSizeV3 + 3; i < len(dib); i += 4 {
+		if dib[i] != 255 {
+			t.Fatalf("alpha 字节 = %d, want 255", dib[i])
+		}
+	}
+
+	back, err := dibToPng(dib)
+	if err != nil {
+		t.Fatalf("dibToPng: %v", err)
+	}
+	got := decodeTestPNG(t, back)
+	assertSamePixels(t, src, got)
+	for y := 0; y < 3; y++ {
+		for x := 0; x < 5; x++ {
+			if a := got.NRGBAAt(x, y).A; a != 255 {
+				t.Fatalf("(%d,%d) alpha = %d, want 255", x, y, a)
+			}
+		}
+	}
+}
+
+func TestOpaqueImageFromLegacyDib(t *testing.T) {
+	// 模拟对端只有老路径：只写 CF_DIB、32bpp、alpha 列留 0（GDI 抓屏的典型产物）。
+	// 读回来必须颜色不变、alpha 全 255，而不是一张全透明的空图。
+	src := image.NewNRGBA(image.Rect(0, 0, 3, 2))
+	want := []color.NRGBA{
+		{R: 255, A: 255}, {G: 255, A: 255}, {B: 255, A: 255},
+		{R: 128, G: 64, B: 32, A: 255}, {A: 255}, {R: 255, G: 255, B: 255, A: 255},
+	}
+	for i, c := range want {
+		src.SetNRGBA(i%3, i/3, c)
+	}
+	dib := nrgbaToDibV3(src)
+	for i := dibHeaderSizeV3 + 3; i < len(dib); i += 4 {
+		dib[i] = 0
+	}
+	back, err := dibToPng(dib)
+	if err != nil {
+		t.Fatalf("dibToPng: %v", err)
+	}
+	assertSamePixels(t, src, decodeTestPNG(t, back))
+}
+
 func TestOpaquePngHasNoAlphaChannel(t *testing.T) {
 	// 不透明图不该白占一条 alpha 通道：png 编码器对 NRGBA 会走 Opaque() 快路径
 	src := image.NewNRGBA(image.Rect(0, 0, 4, 4))
