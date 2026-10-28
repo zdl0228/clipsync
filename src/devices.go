@@ -48,11 +48,8 @@ func firstPair(name, ip string) bool {
 	return first
 }
 
-// 设备列表/发送目标子菜单槽位
-var (
-	devSlots  []*deviceSlot // 设备列表子菜单槽位
-	sendSlots []*deviceSlot // 发送文件目标子菜单槽位
-)
+// 发送文件目标子菜单槽位
+var sendSlots []*deviceSlot
 
 // "已连接"通知去抖：两端同时发现彼此时会互相拨号，连接被替换一次就会触发
 // 两次 onPeerChange(online=true)，用户连着收到两条一模一样的横幅。
@@ -106,29 +103,9 @@ func updateAutoStartMenu(m *systray.MenuItem) {
 	}
 }
 
-// updateDeviceMenus 刷新设备列表子菜单与发送文件目标子菜单
+// updateDeviceMenus 刷新发送文件目标子菜单
 func updateDeviceMenus() {
 	peers := netw.Peers()
-
-	// 设备列表子菜单（含认证中）
-	for i, s := range devSlots {
-		if i < len(peers) {
-			p := peers[i]
-			s.setIP(p.IP)
-			t := p.Name
-			if t == "" {
-				t = p.IP
-			}
-			if !p.Authed {
-				t += " (认证中)"
-			}
-			s.item.SetTitle(t)
-			s.item.Show()
-		} else {
-			s.setIP("")
-			s.item.Hide()
-		}
-	}
 
 	// 发送文件目标子菜单（仅已认证可发送）
 	idx := 0

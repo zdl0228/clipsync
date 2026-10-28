@@ -168,16 +168,6 @@ func onReady() {
 	progressItem.Hide()
 	systray.AddSeparator()
 
-	// 设备 ▸ 列表子菜单（点击断开）
-	devMenu := systray.AddMenuItem("设备 ▸", "")
-	devSlots = make([]*deviceSlot, maxSlots)
-	for i := 0; i < maxSlots; i++ {
-		s := &deviceSlot{item: devMenu.AddSubMenuItem("", "")}
-		s.item.Hide()
-		devSlots[i] = s
-	}
-	systray.AddSeparator()
-
 	mToken := systray.AddMenuItem("配对密钥…", "")
 	mDirect := systray.AddMenuItem("直连指定 IP…", "")
 	mBroadcast := systray.AddMenuItem("自动发现广播", "")
@@ -235,18 +225,8 @@ func onReady() {
 			}
 		}(s)
 	}
-	// 设备子菜单：点击设备 → 断开该设备
-	for _, s := range devSlots {
-		go func(s *deviceSlot) {
-			for range s.item.ClickedCh {
-				ip := s.getIP()
-				if ip == "" {
-					continue
-				}
-				netw.Disconnect(ip)
-			}
-		}(s)
-	}
+	// 设备子菜单已删：原来点击是"断开该设备"，但 UDP 自动发现几秒后就会
+	// 重新拨号连回去，断开毫无意义；设备状态看顶部标题即可。
 
 	netw.OnPeerChange(func(ip string, peer string, online bool) {
 		if online {
