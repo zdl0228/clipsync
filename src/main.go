@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/getlantern/systray"
 	"github.com/sqweek/dialog"
@@ -182,7 +183,6 @@ func onReady() {
 		systray.AddSeparator()
 	}
 	mAutoStart := systray.AddMenuItem("开机启动: 关", "")
-	mNotify := systray.AddMenuItem("测试通知…", "")
 	mQuit := systray.AddMenuItem("退出", "")
 
 	// 发送子菜单：点击目标设备 → 多选文件/文件夹 → 逐个发送到该设备
@@ -292,14 +292,23 @@ func onReady() {
 	}
 	updateAutoStartMenu(mAutoStart)
 
-	// 权限被拒时把状态写在菜单标题上——否则用户只会觉得"点了没反应"，
-	// 根本想不到是系统把通知拦了
+	// 通知是发送/接收的唯一可见反馈，而权限被拒时系统会静默丢弃通知、
+	// 用户只会觉得"点了没反应"。启动时自检一次：异常就弹窗给出修复路径，
+	// 同一天最多提示一次（也可能是用户有意关掉的，不该每次开机都打扰）。
 	go func() {
-		switch st := notifyPermission(); st {
+		st := notifyPermission()
+		switch st {
 		case "", "已允许", "临时允许":
-		default:
-			mNotify.SetTitle("通知已被拒绝 · 点此修复")
+			return
 		}
+		log.Printf("通知权限异常: %s", st)
+		today := time.Now().Format("2006-01-02")
+		if getNotifyWarned() == today {
+			return
+		}
+		setNotifyWarned(today)
+		dialog.Message("系统通知权限当前是「%s」，ClipSync 的发送、接收提示都会被系统静默丢弃。\n\n"+
+			"修复：系统设置 → 通知 → ClipSync → 打开「允许通知」，样式选「横幅」或「提醒」。", st).Info()
 	}()
 
 	// 拖文件到菜单栏图标 → 发送给所有已认证在线设备
@@ -319,25 +328,6 @@ func onReady() {
 			setAutoStartPref(v)
 			log.Printf("设置开机自启: %s", map[bool]string{true: "开", false: "关"}[next])
 			updateAutoStartMenu(mAutoStart)
-		}
-	}()
-
-	// 测试通知：既然通知是发送/接收的唯一反馈，就得有个自检入口。
-	// 点一下能立刻知道通道通不通，权限被拒时直接给出修复路径。
-	go func() {
-		for range mNotify.ClickedCh {
-			st := notifyPermission()
-			notify("ClipSync", "如果你看到这条通知，说明通知通道正常")
-			log.Printf("测试通知已发送，权限状态: %s", st)
-			switch st {
-			case "", "已允许", "临时允许":
-				// 权限没问题，不弹框打扰
-			default:
-				openNotificationSettings()
-				dialog.Message("通知权限：%s\n\n已在系统设置里打开「通知」，找到 ClipSync，"+
-					"开启「允许通知」，样式选「横幅」或「提醒」。\n\n"+
-					"改完后再点一次「测试通知…」确认。", st).Info()
-			}
 		}
 	}()
 

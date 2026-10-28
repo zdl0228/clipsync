@@ -24,6 +24,3 @@ func notifyPrepare() {}
 
 // notifyPermission Windows 没有可查询的单点授权状态，返回空表示无需展示
 func notifyPermission() string { return "" }
-
-// openNotificationSettings 非 macOS 平台没有统一的"通知设置"深链
-func openNotificationSettings() {}

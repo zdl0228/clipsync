@@ -54,6 +54,7 @@ type configFile struct {
 	AutoStart   string   `json:"autoStart"`     // "on"/"off"，记录开机自启偏好
 	ContextMenu string   `json:"contextMenu"`   // "on"/"off"，记录 Windows 右键发送偏好
 	Paired      []string `json:"pairedDevices"` // 已配对设备名，仅用于"首次配对"提示去重
+	NotifyWarn  string   `json:"notifyWarned"`  // 上次提示"通知权限被拒"的日期（YYYY-MM-DD），用于每天最多提醒一次
 }
 
 // cfgMu 串行化对 config.json 的读写：托盘开关（开机启动/右键发送）在各自
@@ -116,6 +117,22 @@ func setContextMenuPref(v string) {
 	defer cfgMu.Unlock()
 	c := readConfigLocked()
 	c.ContextMenu = v
+	writeConfigLocked(c)
+}
+
+// getNotifyWarned 返回上次提示"通知权限被拒"的日期（YYYY-MM-DD）
+func getNotifyWarned() string {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	return readConfigLocked().NotifyWarn
+}
+
+// setNotifyWarned 记录本次提示日期，避免同一天反复弹窗
+func setNotifyWarned(v string) {
+	cfgMu.Lock()
+	defer cfgMu.Unlock()
+	c := readConfigLocked()
+	c.NotifyWarn = v
 	writeConfigLocked(c)
 }
 

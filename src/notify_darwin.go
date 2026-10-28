@@ -44,7 +44,6 @@ static void notifyCenterSend(const char *title, const char *body) {
 import "C"
 
 import (
-	"os/exec"
 	"sync"
 	"unsafe"
 )
@@ -86,10 +85,4 @@ func notifyOS(title, msg string) error {
 	C.free(unsafe.Pointer(t))
 	C.free(unsafe.Pointer(m))
 	return nil
-}
-
-// openNotificationSettings 直接跳到系统设置的通知页，省得用户自己翻
-func openNotificationSettings() {
-	_ = exec.Command("open",
-		"x-apple.systempreferences:com.apple.Notifications-Settings.extension").Start()
 }
