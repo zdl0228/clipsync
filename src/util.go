@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
-	"os"
 )
 
 // notify 发送系统通知；实现按平台分发（darwin 用系统原生 UNUserNotificationCenter，
@@ -13,10 +12,6 @@ func notify(title, msg string) {
 	if err := notifyOS(title, msg); err != nil {
 		log.Printf("发送通知失败: %v", err)
 	}
-}
-
-func osHostname() (string, error) {
-	return os.Hostname()
 }
 
 // fingerprint 生成剪贴板内容标识，用于防回环判断
