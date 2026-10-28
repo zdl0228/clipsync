@@ -39,17 +39,29 @@ static char* ReadPasteboardText(int *outLen) {
 }
 
 // 读剪贴板图片，转成 PNG 并复制到 malloc 缓冲（调用方 free）；无图片返回 NULL
+//
+// 先直接取 public.png 的**原始字节**：浏览器、截图工具、多数 App 都写这个类型，
+// 拿到就是源码级无损，alpha 一个 bit 都不动。
+// 只有在没有 public.png 时才退回 NSImage 路线（截图工具写 TIFF、PDF 的情况）——
+// 那条路要走 TIFF 中转，而 TIFF 的 alpha 是预乘的，再编码回 PNG 时 NGBA 会做
+// unpremultiply，A=0 的像素 RGB 会被抹成 0，半透明边缘也会轻微偏色。
 static void* ReadPasteboardImagePNG(int *outLen) {
     *outLen = 0;
     void *result = NULL;
     @autoreleasepool {
         NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        NSArray *imgs = [pb readObjectsForClasses:@[[NSImage class]] options:nil];
-        if (imgs.count == 0) return NULL;
-        NSImage *img = imgs[0];
-        NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:[img TIFFRepresentation]];
-        if (!rep) return NULL;
-        NSData *d = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+
+        // 1) 原始 PNG 优先
+        NSData *d = [pb dataForType:NSPasteboardTypePNG];
+        if (!d || d.length == 0) {
+            // 2) 回退：任意 NSImage（TIFF/PDF 等）重新编码成 PNG
+            NSArray *imgs = [pb readObjectsForClasses:@[[NSImage class]] options:nil];
+            if (imgs.count == 0) return NULL;
+            NSImage *img = imgs[0];
+            NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:[img TIFFRepresentation]];
+            if (!rep) return NULL;
+            d = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+        }
         if (!d || d.length == 0) return NULL;
         NSUInteger n = d.length;
         result = malloc(n);
@@ -81,6 +93,11 @@ static int WritePasteboardText(const char *utf8, int len) {
 }
 
 // 写 PNG 图片；返回 1 成功 / 0 失败
+//
+// writeObjects 交出去的是 NSImage，落到剪贴板上只有 public.tiff——而 TIFF 里的
+// alpha 是预乘的，对端再转 PNG 时 unpremultiply 会损失半透明像素的颜色。
+// 所以先 writeObjects 让只认 TIFF/PDF 的程序有得取，再把**原始 PNG 字节**
+// 追加成 public.png（writeObjects 内部会 clearContents，顺序不能反过来）。
 static int WritePasteboardImage(const void *data, int len) {
     @autoreleasepool {
         if (!data || len <= 0) return 0;
@@ -91,7 +108,10 @@ static int WritePasteboardImage(const void *data, int len) {
         [pb clearContents];
         BOOL ok = [pb writeObjects:@[img]];
         [img release];
-        return ok ? 1 : 0;
+        if (!ok) return 0;
+        // 增强项：失败也算成功，TIFF 已经在那儿了
+        [pb setData:nsdata forType:NSPasteboardTypePNG];
+        return 1;
     }
 }
 
