@@ -33,6 +33,13 @@ func main() {
 		runSendHelper(os.Args[2:])
 		return
 	}
+	// 版本查询必须排在 initLog 之前：结果要打到标准输出，不能进日志文件。
+	// 注意 Windows 的 exe 是 windowsgui 子系统（无控制台），stdout 看不到，
+	// 那边靠托盘菜单的版本项或日志首行来确认版本。
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
+		fmt.Println(versionDetail())
+		return
+	}
 	initLog()
 	defer func() {
 		if r := recover(); r != nil {
@@ -45,7 +52,7 @@ func main() {
 		runSetToken(os.Args[2])
 		return
 	}
-	log.Println("=== ClipSync 启动 ===")
+	log.Println("=== ClipSync 启动 ===", versionDetail())
 	systray.Run(onReady, onExit)
 }
 
@@ -157,7 +164,7 @@ func onReady() {
 	} else {
 		systray.SetIcon(iconBytes)
 	}
-	systray.SetTooltip(fmt.Sprintf("ClipSync - %s", name))
+	systray.SetTooltip(fmt.Sprintf("ClipSync %s - %s", versionText(), name))
 
 	mOnline := systray.AddMenuItem("等待设备…", "")
 	mOnline.Disable()
@@ -205,6 +212,11 @@ func onReady() {
 		systray.AddSeparator()
 	}
 	mAutoStart := systray.AddMenuItem("开机启动: 关", "")
+	systray.AddSeparator()
+	// 版本号常驻菜单底部（禁用态，点击无反应）：两台机器版本不一致时，
+	// 一眼就能看出是哪台没更新，比翻日志或看文件时间靠谱
+	mVersion := systray.AddMenuItem("版本 "+versionText(), "")
+	mVersion.Disable()
 	mQuit := systray.AddMenuItem("退出", "")
 
 	// 发送子菜单：点击目标设备 → 多选文件/文件夹 → 逐个发送到该设备
