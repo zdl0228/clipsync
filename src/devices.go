@@ -27,18 +27,22 @@ func loadPairedOnce() {
 }
 
 // firstPair 记下"该设备首次配对"（用于发通知，重连不重复提示），
-// 返回本次是否为首次；首次会持久化到 config.json，重启后不再误报"新配对"
-func firstPair(name string) bool {
+// 返回本次是否为首次；首次会持久化到 config.json，重启后不再误报"新配对"。
+// 记录键是"设备名@IP"：只按设备名去重的话，办公室里两台同名 Windows
+// （一堆机器都叫 DESKTOP-XXXX）第二台永远不提示配对；反过来只看 IP 又会
+// 在 DHCP 换地址后重复提示。两者组合最贴近"这是不是一台没见过的机器"。
+func firstPair(name, ip string) bool {
 	if name == "" {
 		return false
 	}
+	key := name + "@" + ip
 	pairedMu.Lock()
 	loadPairedOnce()
-	first := !pairedSet[name]
-	pairedSet[name] = true
+	first := !pairedSet[key]
+	pairedSet[key] = true
 	pairedMu.Unlock()
 	if first {
-		addPaired(name)
+		addPaired(key)
 	}
 	return first
 }

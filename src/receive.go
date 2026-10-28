@@ -23,11 +23,19 @@ type recvState struct {
 	tmpFile    *os.File
 	tmpPath    string
 	fileName   string
+	relDir     string // 相对桌面的子目录（文件夹传输时用），空表示直接放桌面
 	total      int64
 	got        int64
 	count      int
 	chunkCount int
 }
+
+// 目录嵌套的防护上限：对端可以随便声明 relPath，不能让它在桌面上
+// 造出几百层目录（路径过长在 Windows 上还会直接失败）
+const (
+	maxRelDepth   = 24
+	maxRelPathLen = 240
+)
 
 // ---------- 文件接收 ----------
 
@@ -37,13 +45,9 @@ func desktopDir() string {
 	return filepath.Join(home, "Desktop")
 }
 
-// safeFileName 清洗对端传来的文件名：只保留文件名部分，去掉目录/穿越段，防止路径穿越；
-// 并移除 Windows 非法字符，避免 mac→Windows 发送后目标端保存失败。
-func safeFileName(name string) string {
-	n := filepath.Base(name)
-	if n == "" || n == "." || n == ".." {
-		return "received_file"
-	}
+// sanitizeSegment 清洗单个路径段（文件名或目录名）：去掉各平台的非法字符、
+// 结尾的点与空格，并避开 Windows 保留设备名；全被过滤掉时返回 ""。
+func sanitizeSegment(n string) string {
 	n = strings.Map(func(r rune) rune {
 		switch r {
 		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
@@ -56,7 +60,7 @@ func safeFileName(name string) string {
 	}, n)
 	n = strings.TrimRight(n, ". ") // Windows 文件名不能以空格或点结尾
 	if n == "" {
-		return "received_file"
+		return ""
 	}
 	// Windows 的保留设备名（CON/PRN/AUX/NUL/COM1..9/LPT1..9）不能当文件名，
 	// 带扩展名也不行（CON.txt 同样打不开）。mac 发过来一个叫 con.txt 的文件时，
@@ -68,6 +72,64 @@ func safeFileName(name string) string {
 		n = "_" + n
 	}
 	return n
+}
+
+// safeFileName 清洗对端传来的文件名：只保留文件名部分，去掉目录/穿越段，防止路径穿越；
+// 并移除 Windows 非法字符，避免 mac→Windows 发送后目标端保存失败。
+func safeFileName(name string) string {
+	// 先统一分隔符：Windows 对端可能传来反斜杠路径，filepath.Base 在
+	// 非 Windows 上不会把 "\" 当分隔符，会漏掉后半段
+	n := sanitizeSegment(filepath.Base(strings.ReplaceAll(name, "\\", "/")))
+	if n == "" {
+		return "received_file"
+	}
+	return n
+}
+
+// cleanRelSegments 把对端声明的相对路径拆成安全的各级名字：丢掉空段、"." 与 ".."
+// （防目录穿越），逐段过 sanitizeSegment，并限制层数与总长。
+func cleanRelSegments(p string) []string {
+	p = strings.ReplaceAll(p, "\\", "/")
+	out := make([]string, 0, 4)
+	total := 0
+	for _, seg := range strings.Split(p, "/") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		seg = sanitizeSegment(seg)
+		if seg == "" {
+			continue
+		}
+		if len(out) >= maxRelDepth || total+len(seg) > maxRelPathLen {
+			break
+		}
+		out = append(out, seg)
+		total += len(seg) + 1
+	}
+	return out
+}
+
+// safeRelDir 从相对路径里取出"目录部分"（最后一段是文件名，不属于目录）
+func safeRelDir(relPath string) string {
+	segs := cleanRelSegments(relPath)
+	if len(segs) < 2 {
+		return "" // 只有文件名，或者没传，直接落桌面
+	}
+	return filepath.Join(segs[:len(segs)-1]...)
+}
+
+// handleFileDir 收到目录包：在桌面重建该子目录（空目录只能靠这一步传过来）
+func handleFileDir(ip string, h *PacketHeader) {
+	segs := cleanRelSegments(h.RelPath)
+	if len(segs) == 0 {
+		log.Printf("忽略无目录名的 file_dir: from=%s rel=%q", ip, h.RelPath)
+		return
+	}
+	dir := filepath.Join(append([]string{desktopDir()}, segs...)...)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("创建接收目录失败 %s: %v", dir, err)
+	}
 }
 
 // handleFileMeta 收到元信息：写临时文件，直接自动接收，完成后保存到桌面。
@@ -94,6 +156,7 @@ func handleFileMeta(ip string, h *PacketHeader) {
 		tmpFile:    tmp,
 		tmpPath:    tmp.Name(),
 		fileName:   safeFileName(h.FileName),
+		relDir:     safeRelDir(h.RelPath),
 		total:      h.FileSize,
 		chunkCount: h.ChunkCount,
 	}
@@ -165,18 +228,32 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 	}
 }
 
-// finishReceive 关闭临时文件，保存到桌面
+// finishReceive 关闭临时文件，保存到桌面（文件夹传输时保存到对应子目录）
 func finishReceive(rs *recvState) {
 	rs.tmpFile.Close()
 	progressEnd()
 
 	dir := desktopDir()
-	final := filepath.Join(dir, avoidOverwrite(rs.fileName))
+	if rs.relDir != "" {
+		dir = filepath.Join(desktopDir(), rs.relDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			// 目录建不出来就退回桌面，至少文件不丢
+			log.Printf("创建接收目录失败，改存桌面: %v", err)
+			dir = desktopDir()
+		}
+	}
+	final, err := reservePath(dir, rs.fileName)
+	if err != nil {
+		log.Printf("分配接收文件名失败: %v", err)
+		notify("ClipSync", fmt.Sprintf("文件接收失败，无法保存到桌面：%v", err))
+		return
+	}
 	if err := os.Rename(rs.tmpPath, final); err != nil {
 		log.Printf("重命名到桌面失败: %v", err)
 		// 跨文件系统时 Rename 会返回 EXDEV，降级为拷贝兜底，避免文件丢失
 		if err2 := copyFile(rs.tmpPath, final); err2 != nil {
 			log.Printf("拷贝保存也失败: %v", err2)
+			os.Remove(final) // 清掉占位符，别留个空文件误导用户
 			notify("ClipSync", fmt.Sprintf("文件接收失败，保存到桌面出错：%v", err2))
 			return
 		}
@@ -245,21 +322,27 @@ func clearRecv(ip string) {
 	}
 }
 
-// avoidOverwrite 若目标文件已存在，自动追加序号避免覆盖
-func avoidOverwrite(path string) string {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return path
-	}
-	dir := filepath.Dir(path)
-	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	name := base[:len(base)-len(ext)]
-	for i := 1; i <= 999; i++ {
-		cand := filepath.Join(dir, fmt.Sprintf("%s(%d)%s", name, i, ext))
-		if _, err := os.Stat(cand); os.IsNotExist(err) {
-			return cand
+// reservePath 在 dir 里原子地占住一个不重名的目标路径：先以 O_EXCL 建空文件当
+// 占位符，同名并发接收时只有一个能成功，另一个自动退到 xxx(1).ext。
+// 原来是"先 Stat 判断、再 Rename 落地"，两步之间存在时间窗——两台设备同时发
+// 同名文件（或同一文件夹里有重名文件）时后到的会把先到的覆盖掉。
+func reservePath(dir, name string) (string, error) {
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 0; i <= 9999; i++ {
+		cand := filepath.Join(dir, name)
+		if i > 0 {
+			cand = filepath.Join(dir, fmt.Sprintf("%s(%d)%s", stem, i, ext))
+		}
+		f, err := os.OpenFile(cand, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			f.Close()
+			return cand, nil
+		}
+		if !os.IsExist(err) {
+			return "", err
 		}
 	}
 	// 极端兜底：序号用尽时以时间戳避免死循环
-	return filepath.Join(dir, fmt.Sprintf("%s-%d%s", name, time.Now().UnixNano(), ext))
+	return filepath.Join(dir, fmt.Sprintf("%s-%d%s", stem, time.Now().UnixNano(), ext)), nil
 }

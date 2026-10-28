@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"crypto/tls"
 	"net"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,5 +152,66 @@ func TestSafeFileName(t *testing.T) {
 		if got := safeFileName(in); got != want {
 			t.Errorf("safeFileName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestSafeRelDir 验证文件夹传输的相对路径清洗：必须挡住目录穿越，
+// 同时保留正常的嵌套结构
+func TestSafeRelDir(t *testing.T) {
+	cases := map[string]string{
+		"":                   "",
+		"proj/a.txt":         "proj",
+		"proj/sub/dir/a.txt": filepath.Join("proj", "sub", "dir"),
+		// ".." 段整段丢弃，剩下的段只能落在桌面之内，所以
+		// "../etc/passwd" 实际存成 桌面/etc/passwd，不会真的写到 /etc
+		"../etc/passwd":        "etc",
+		"proj/../../etc/a.txt": filepath.Join("proj", "etc"),
+		"/abs/a.txt":           "abs",
+		"proj\\sub\\a.txt":     filepath.Join("proj", "sub"), // Windows 分隔符
+		"proj//a.txt":          "proj",
+		"./proj/./a.txt":       "proj",
+		"proj/con.txt":         "proj",
+		"a.txt":                "",
+	}
+	for in, want := range cases {
+		if got := safeRelDir(in); got != want {
+			t.Errorf("safeRelDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestReservePathAtomic 验证并发占用同名目标时不会互相覆盖
+func TestReservePathAtomic(t *testing.T) {
+	dir := t.TempDir()
+	const n = 8
+	paths := make(chan string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p, err := reservePath(dir, "report.pdf")
+			if err != nil {
+				t.Errorf("reservePath: %v", err)
+				return
+			}
+			paths <- p
+		}()
+	}
+	wg.Wait()
+	close(paths)
+	seen := map[string]bool{}
+	for p := range paths {
+		if seen[p] {
+			t.Errorf("两个并发接收拿到了同一个路径: %s", p)
+		}
+		seen[p] = true
+	}
+	if len(seen) != n {
+		t.Errorf("期望 %d 个不同路径，实际 %d", n, len(seen))
+	}
+	// 已有文件时不能再返回同名路径
+	if _, err := os.Stat(filepath.Join(dir, "report.pdf")); err != nil {
+		t.Errorf("首个路径应已创建占位文件: %v", err)
 	}
 }

@@ -53,7 +53,7 @@ type configFile struct {
 	Token       string   `json:"token"`
 	AutoStart   string   `json:"autoStart"`     // "on"/"off"，记录开机自启偏好
 	ContextMenu string   `json:"contextMenu"`   // "on"/"off"，记录 Windows 右键发送偏好
-	Paired      []string `json:"pairedDevices"` // 已配对设备名，仅用于"首次配对"提示去重
+	Paired      []string `json:"pairedDevices"` // 已配对设备"名字@IP"，仅用于"首次配对"提示去重
 	NotifyWarn  string   `json:"notifyWarned"`  // 上次提示"通知权限被拒"的日期（YYYY-MM-DD），用于每天最多提醒一次
 }
 

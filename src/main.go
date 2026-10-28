@@ -94,6 +94,9 @@ func onReady() {
 			handleFileMeta(ip, h)
 		case PacketFileData:
 			handleFileData(ip, h, body)
+		case PacketFileDir:
+			// 目录结构/空目录：只建目录，不产生文件
+			handleFileDir(ip, h)
 		case PacketClipboard:
 			// 超大内容直接拒绝：写入剪贴板会卡住整个 UI，而且很可能是
 			// 对端误发（比如复制了一个巨大的图片）而不是真需要同步的东西
@@ -249,7 +252,7 @@ func onReady() {
 		if online {
 			mOnline.SetTitle("已连接: " + peer)
 			// 首次配对发系统通知；重连同一设备只轻量提示
-			if firstPair(peer) {
+			if firstPair(peer, ip) {
 				log.Printf("配对新设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已配对新设备：%s", peer))
 			} else {

@@ -13,6 +13,7 @@ const (
 	PacketAuth      = "auth"
 	PacketClipboard = "clipboard"
 	PacketFileMeta  = "file_meta"
+	PacketFileDir   = "file_dir" // 只为传递空目录/目录结构，无 body
 	PacketFileData  = "file_data"
 	PacketPing      = "ping"
 	PacketPong      = "pong"
@@ -41,6 +42,10 @@ type PacketHeader struct {
 	FileSize   int64  `json:"fileSize,omitempty"`
 	ChunkIndex int    `json:"chunkIndex,omitempty"`
 	ChunkCount int    `json:"chunkCount,omitempty"`
+	// RelPath 是发送文件夹时的相对路径（含最外层文件夹名，用 / 分隔），
+	// 接收端据此在桌面重建目录结构。空值表示单个文件，直接放桌面。
+	// 旧版对端不认识这个字段，会忽略它 → 退化成扁平存放，不会出错。
+	RelPath string `json:"relPath,omitempty"`
 }
 
 func (h PacketHeader) JSON() []byte {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/sqweek/dialog"
 )
@@ -76,6 +77,12 @@ func onDropFiles(files []string) {
 // sendFileTo 分块读取并发送文件到指定对端；断线时中止并提示
 // silent 为 true 时不发单条"发送完成"通知（批量发送时由上层统一汇总）
 func sendFileTo(ip string, path string, silent bool) {
+	sendFileToRel(ip, path, "", silent)
+}
+
+// sendFileToRel 同 sendFileTo，额外携带相对路径（文件夹发送时用来在
+// 对端重建目录结构）；rel 为空表示单个文件，落在桌面根目录。
+func sendFileToRel(ip string, path string, rel string, silent bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("sendFileTo panic: %v", r)
@@ -104,8 +111,11 @@ func sendFileTo(ip string, path string, silent bool) {
 		chunkCount = 1
 	}
 
-	log.Printf("开始发送文件: %s (%d bytes, %d chunks)", name, size, chunkCount)
-	netw.SendTo(ip, PacketHeader{Type: PacketFileMeta, FileName: name, FileSize: size, ChunkCount: chunkCount}, nil)
+	log.Printf("开始发送文件: %s (%d bytes, %d chunks, rel=%q)", name, size, chunkCount, rel)
+	netw.SendTo(ip, PacketHeader{
+		Type: PacketFileMeta, FileName: name, FileSize: size,
+		ChunkCount: chunkCount, RelPath: rel,
+	}, nil)
 
 	progressBegin()
 	defer progressEnd() // 任何返回都结束该进行中任务
@@ -144,6 +154,8 @@ func sendFileTo(ip string, path string, silent bool) {
 }
 
 // sendFolderTo 递归收集文件夹内所有文件，逐个发送到指定对端（复用单文件协议，兼容旧版）
+// 每个文件都带上相对路径（含最外层文件夹名），接收端据此重建目录结构；
+// 空目录单独发一条 file_dir 包，否则只有文件的目录会把空目录丢掉。
 // quietFinal 为 true 时不发本文件夹汇总通知（整体批量时由上层统一汇总）
 func sendFolderTo(ip string, dir string, quietFinal bool) {
 	defer func() {
@@ -154,14 +166,24 @@ func sendFolderTo(ip string, dir string, quietFinal bool) {
 	if !netw.IsPeerAuthed(ip) {
 		return
 	}
-	var files []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+
+	clean := filepath.Clean(dir)
+	top := topFolderName(clean)
+
+	var files, dirs []string
+	err := filepath.WalkDir(clean, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// 单个子目录没权限就跳过，别让整个文件夹发送失败
+			log.Printf("遍历跳过 %s: %v", p, err)
+			return nil
 		}
-		if !d.IsDir() {
-			files = append(files, p)
+		if d.IsDir() {
+			if p != clean {
+				dirs = append(dirs, p)
+			}
+			return nil
 		}
+		files = append(files, p)
 		return nil
 	})
 	if err != nil {
@@ -169,16 +191,42 @@ func sendFolderTo(ip string, dir string, quietFinal bool) {
 		dialog.Message("读取文件夹失败：%v", err).Error()
 		return
 	}
-	if len(files) == 0 {
-		notify("ClipSync", "该文件夹内没有文件")
+	if len(files) == 0 && len(dirs) == 0 {
+		notify("ClipSync", "该文件夹是空的")
 		return
 	}
-	log.Printf("开始发送文件夹: %s (共 %d 个文件)", dir, len(files))
+	log.Printf("开始发送文件夹: %s (共 %d 个文件, %d 个子目录)", clean, len(files), len(dirs))
+
+	// 先建目录：空目录只能靠这一步传递，同时让文件落位时目录一定存在
+	for _, dp := range dirs {
+		netw.SendTo(ip, PacketHeader{Type: PacketFileDir, RelPath: relPathFor(clean, dp)}, nil)
+	}
 	for _, fp := range files {
-		sendFileTo(ip, fp, true) // 文件夹内逐个文件静默，避免通知轰炸
+		sendFileToRel(ip, fp, relPathFor(clean, fp), true) // 文件夹内逐个文件静默，避免通知轰炸
 	}
-	log.Printf("文件夹发送完成: %s (共 %d 个文件)", dir, len(files))
+	log.Printf("文件夹发送完成: %s (共 %d 个文件)", clean, len(files))
 	if !quietFinal {
-		notify("ClipSync", fmt.Sprintf("文件夹发送完成：共 %d 个文件", len(files)))
+		notify("ClipSync", fmt.Sprintf("文件夹发送完成：%s（%d 个文件）", top, len(files)))
 	}
+}
+
+// topFolderName 取文件夹自己的名字，作为对端保存时的顶层目录名
+func topFolderName(clean string) string {
+	top := filepath.Base(clean)
+	if top == "" || top == "." || top == string(filepath.Separator) {
+		return "folder" // 直接发根目录这种极端情况，给个兜底名字
+	}
+	return top
+}
+
+// relPathFor 把 root 里的某个路径换算成"以 root 的父目录为基准"的相对路径，
+// 最外层文件夹名自然包含在内（root=/a/proj, p=/a/proj/sub/x → proj/sub/x）。
+// 换算失败（不同卷、符号链接指向外面）时退回"顶层名 + 文件名"，至少不丢文件。
+func relPathFor(root, p string) string {
+	top := topFolderName(root)
+	rel, err := filepath.Rel(filepath.Dir(root), p)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		rel = filepath.Join(top, filepath.Base(p))
+	}
+	return filepath.ToSlash(rel)
 }

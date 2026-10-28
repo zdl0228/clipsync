@@ -9,30 +9,44 @@ package main
 #import <stdlib.h>
 #import <dispatch/dispatch.h>
 
+// DoSelectPaths 真正弹面板的逻辑，必须在主线程上调用
+static char* DoSelectPaths(void) {
+    char *result = NULL;
+    @autoreleasepool {
+        NSOpenPanel *panel = [NSOpenPanel openPanel];
+        [panel setTitle:@"选择要发送的文件或文件夹（可多选）"];
+        [panel setCanChooseFiles:YES];
+        [panel setCanChooseDirectories:YES];
+        [panel setAllowsMultipleSelection:YES];
+        [panel setPrompt:@"发送"];
+        [NSApp activateIgnoringOtherApps:YES];
+        if ([panel runModal] == NSModalResponseOK) {
+            NSArray *urls = [panel URLs];
+            NSMutableString *out = [NSMutableString string];
+            for (NSURL *u in urls) {
+                [out appendString:[u path]];
+                [out appendString:@"\n"];
+            }
+            result = strdup([out UTF8String]);
+        }
+    }
+    return result;
+}
+
 // SelectPathsNative 由 App 自身进程弹出系统面板，多选文件和文件夹；
 // 返回每行一个路径的字符串；用户取消返回 NULL。
 // 在 AppKit 主线程运行并激活 App，避免菜单栏应用（无窗口）弹出时面板一闪而过。
-static char* SelectPathsNative() {
+//
+// 注意：prompt 回调本身就跑在主线程（菜单/拖放进来的路径也一样），此时再
+// dispatch_sync 到 main queue 就是自己等自己 —— 直接死锁，整个 App 卡住。
+// 所以先判断线程，已经在主线程就地执行。
+static char* SelectPathsNative(void) {
+    if ([NSThread isMainThread]) {
+        return DoSelectPaths();
+    }
     __block char *result = NULL;
     dispatch_sync(dispatch_get_main_queue(), ^{
-        @autoreleasepool {
-            NSOpenPanel *panel = [NSOpenPanel openPanel];
-            [panel setTitle:@"选择要发送的文件或文件夹（可多选）"];
-            [panel setCanChooseFiles:YES];
-            [panel setCanChooseDirectories:YES];
-            [panel setAllowsMultipleSelection:YES];
-            [panel setPrompt:@"发送"];
-            [NSApp activateIgnoringOtherApps:YES];
-            if ([panel runModal] == NSModalResponseOK) {
-                NSArray *urls = [panel URLs];
-                NSMutableString *out = [NSMutableString string];
-                for (NSURL *u in urls) {
-                    [out appendString:[u path]];
-                    [out appendString:@"\n"];
-                }
-                result = strdup([out UTF8String]);
-            }
-        }
+        result = DoSelectPaths();
     });
     return result;
 }
