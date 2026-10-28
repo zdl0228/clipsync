@@ -53,6 +53,13 @@ func runSendHelper(paths []string) {
 	}
 	w.Flush()
 
+	// 发完立刻半关闭写方向：主进程靠"读到 EOF"才知道路径发完了。
+	// 少了这一步，主进程会一直等下一行直到 10s 读超时，而客户端 3s 就放弃，
+	// 于是每次右键发送都白卡 3 秒，还误报"主进程未确认"。
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.CloseWrite()
+	}
+
 	// 等待主进程回执，确认已受理
 	reply, err := bufio.NewReader(conn).ReadString('\n')
 	if err == nil && strings.HasPrefix(reply, "OK") {

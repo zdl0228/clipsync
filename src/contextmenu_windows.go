@@ -13,6 +13,8 @@ import (
 // - "Directory" 匹配文件夹
 const (
 	ctxMenuDisplay = "发送到 ClipSync"
+	// ctxMenuLabel 托盘菜单里那个开关的名字
+	ctxMenuLabel = "右键发送"
 )
 
 // ctxMenuKeys 需要注册的右键菜单作用域
@@ -77,3 +79,6 @@ func isContextMenuEnabled() bool {
 	k.Close()
 	return true
 }
+
+// contextMenuHint Windows 的菜单项就在右键一级菜单里，开启后无需额外说明
+func contextMenuHint() string { return "" }

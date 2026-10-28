@@ -154,21 +154,22 @@ func onReady() {
 	mBroadcast.Check()
 	systray.AddSeparator()
 
-	// 右键发送（仅 Windows）：默认开启；开启时幂等刷新注册表（自动修正 exe 路径），关闭时移除
+	// 右键发送：Windows 写注册表、macOS 装 Finder 服务（见 contextmenu_*.go）。
+	// 默认开启；开启时幂等刷新（自动修正 exe 路径），关闭时移除
 	var mCtx *systray.MenuItem
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		if getContextMenuPref() != "off" {
 			if err := enableContextMenu(); err != nil {
 				log.Printf("注册右键发送菜单失败: %v", err)
 			} else {
 				setContextMenuPref("on")
-				log.Println("已注册右键发送菜单")
+				log.Printf("已注册右键发送菜单（%s）", ctxMenuLabel)
 			}
-			mCtx = systray.AddMenuItem("右键发送: 开", "")
+			mCtx = systray.AddMenuItem(ctxMenuLabel+": 开", "")
 			mCtx.Check()
 		} else {
 			disableContextMenu()
-			mCtx = systray.AddMenuItem("右键发送: 关", "")
+			mCtx = systray.AddMenuItem(ctxMenuLabel+": 关", "")
 			mCtx.Uncheck()
 		}
 		systray.AddSeparator()
@@ -303,7 +304,7 @@ func onReady() {
 		}
 	}()
 
-	// 右键发送开关：点击在"注册/移除"右键菜单之间切换，并记录偏好
+	// 右键发送开关：点击在"注册/移除"之间切换，并记录偏好
 	if mCtx != nil {
 		go func() {
 			for range mCtx.ClickedCh {
@@ -314,15 +315,19 @@ func onReady() {
 						continue
 					}
 					setContextMenuPref("on")
-					mCtx.SetTitle("右键发送: 开")
+					mCtx.SetTitle(ctxMenuLabel + ": 开")
 					mCtx.Check()
+					// mac 的服务藏在右键子菜单里，开启后说明一下从哪找
+					if hint := contextMenuHint(); hint != "" {
+						dialog.Message("%s", hint).Info()
+					}
 				} else {
 					if err := disableContextMenu(); err != nil {
 						dialog.Message("移除右键发送菜单失败：%v", err).Error()
 						continue
 					}
 					setContextMenuPref("off")
-					mCtx.SetTitle("右键发送: 关")
+					mCtx.SetTitle(ctxMenuLabel + ": 关")
 					mCtx.Uncheck()
 				}
 				log.Printf("右键发送菜单: %s", map[bool]string{true: "开", false: "关"}[on])
