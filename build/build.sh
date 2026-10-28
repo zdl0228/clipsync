@@ -58,9 +58,11 @@ VER_MINOR="$(echo "$VER" | cut -d. -f2)"
 VER_PATCH="$(echo "$VER" | cut -d. -f3)"
 : "${VER_MINOR:=0}"
 : "${VER_PATCH:=0}"
-# Windows 版本资源固定四段，而 appVersion 允许只写两段（1.0），缺的位补 0。
-# 直接拼 "$VER.0" 会得到三段 "1.0.0"，goversioninfo 会报错或写出畸形资源。
-FILE_VER="$VER_MAJOR.$VER_MINOR.$VER_PATCH.0"
+# 版本资源里的版本串直接写 appVersion（1.0），跟托盘菜单保持一致。
+# 早期版本在这里补零成四段 1.0.0.0 喂进去，结果 exe 属性页显示 1.0.0.0，
+# 跟界面上的 v1.0 对不上。四段是 VS_FIXEDFILEINFO 内部 DWORD 的存储形式，
+# 不是给人看的，属性页读的是 StringFileInfo 里的字符串。
+FILE_VER="$VER"
 
 echo ">>> ClipSync v${VER}（构建 ${BUILD_STAMP}）"
 
@@ -71,18 +73,28 @@ echo ">>> ClipSync v${VER}（构建 ${BUILD_STAMP}）"
 # 否则链接报 "too many .rsrc sections"（架构不符）。
 if command -v goversioninfo >/dev/null 2>&1; then
   echo ">>> 生成 Windows 版本资源 ..."
-  goversioninfo -arm=false -64=true -o resource_windows_amd64.syso \
-    -ver-major "$VER_MAJOR" -ver-minor "$VER_MINOR" -ver-patch "$VER_PATCH" -ver-build 0 \
-    -file-version "$FILE_VER" -product-version "$FILE_VER" \
-    -product-name "ClipSync" -internal-name "ClipSync" -original-name "ClipSync.exe" \
-    -description "ClipSync 跨设备剪贴板/文件同步" -company "ClipSync" \
-    -copyright "Copyright (C) 2026 ClipSync" \
-    -icon icon.ico >/dev/null
+  VER_ERR="$(mktemp)"
+  if ! goversioninfo -arm=false -64=true -o resource_windows_amd64.syso \
+      -ver-major "$VER_MAJOR" -ver-minor "$VER_MINOR" -ver-patch "$VER_PATCH" -ver-build 0 \
+      -file-version "$FILE_VER" -product-version "$FILE_VER" \
+      -product-name "ClipSync" -internal-name "ClipSync" -original-name "ClipSync.exe" \
+      -description "ClipSync 跨设备剪贴板/文件同步" -company "ClipSync" \
+      -copyright "Copyright (C) 2026 ClipSync" \
+      -icon icon.ico >/dev/null 2>"$VER_ERR"; then
+    echo "错误：生成 Windows 版本资源失败"
+    cat "$VER_ERR"
+    rm -f "$VER_ERR"
+    exit 1
+  fi
+  # goversioninfo 只认 x.y.z 三段，两段的 "1.0" 会打两条 "could not be parsed" 警告。
+  # 这是预期内的：字符串值照样原样写入（属性页就显示 1.0），数字字段由 -ver-* 参数决定。
+  grep -v "could not be parsed" "$VER_ERR" >&2 || true
+  rm -f "$VER_ERR"
 else
   echo ">>> 跳过版本资源：未安装 goversioninfo（沿用 src/resource_windows_amd64.syso 里已有的版本信息）"
 fi
 
-echo ">>> 开始编译（使用 $GO）"
+echo ">>> 开始编译（使用 ${GO}）"
 
 if command -v clang >/dev/null 2>&1; then
   echo ">>> 编译 macOS 版 ..."
@@ -97,6 +109,19 @@ echo ">>> 编译 Windows 版 ..."
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 "$GO" build -mod=vendor \
   -ldflags="-H windowsgui -X main.appBuild=$BUILD_STAMP" -o "$DIR/ClipSync.exe" .
 echo ">>> Windows 版完成: $DIR/ClipSync.exe"
+
+# 自检：确认 exe 里真的是期望的版本串。goversioninfo 解析不了两段版本号时只打
+# warning 不报错，曾经就是因为这个静默写出过 0.0.0.0，属性页看起来"没版本号"。
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$DIR/ClipSync.exe" "$FILE_VER" <<'PYEOF'
+import sys
+data = open(sys.argv[1], 'rb').read()
+want = sys.argv[2]
+if want.encode('utf-16-le') not in data:
+    sys.exit("错误：exe 里找不到版本串 %s，版本资源没嵌进去" % want)
+print(">>> 版本资源自检通过：FileVersion = %s" % want)
+PYEOF
+fi
 
 # 打包 macOS 的 .app 与 dmg（需要 macOS + 已有的 .app 骨架/图标；失败不影响已产出的 exe）
 APP="$DIR/build/ClipSync.app"
