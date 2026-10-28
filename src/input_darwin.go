@@ -46,23 +46,40 @@ import (
 	"unsafe"
 )
 
-// inputIP 弹出系统输入框获取对端直连 IP；取消或为空返回 ""
-func inputIP() string {
-	script := `set r to display dialog "输入要对端直连的 IP 地址（如 192.168.1.100）" default answer "" with title "ClipSync 直连" buttons {"取消", "确定"} default button 2`
-	out, err := exec.Command("osascript", "-e", script).Output()
+// asQuote 把文本包成 AppleScript 字符串字面量（转义反斜杠与双引号）
+func asQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
+// dialogScript 生成"输入框"AppleScript。回传用 ASCII 30 作分隔符：
+// osascript 默认输出形如 "text returned:x, button returned:确定"，
+// 用户输入含逗号就无法切分，故让脚本自己拼 "OK<US>文本"。
+func dialogScript(title, prompt, def string) string {
+	return "set r to display dialog " + asQuote(prompt) +
+		" default answer " + asQuote(def) +
+		" with title " + asQuote(title) +
+		` buttons {"取消", "确定"} default button 2` + "\n" +
+		`return "OK" & (ASCII character 30) & (text returned of r)`
+}
+
+// inputText 弹出系统输入框，返回用户输入（默认值预填）；取消返回 ""
+func inputText(title, prompt, def string) string {
+	out, err := exec.Command("osascript", "-e", dialogScript(title, prompt, def)).Output()
 	if err != nil {
+		return "" // 用户点了取消（AppleScript 报 -128）或脚本失败
+	}
+	s := strings.TrimRight(string(out), "\r\n")
+	if !strings.HasPrefix(s, "OK\x1e") {
 		return ""
 	}
-	// 输出形如: text returned:192.168.1.100, button returned:确定
-	s := string(out)
-	if i := strings.Index(s, "text returned:"); i >= 0 {
-		s = s[i+len("text returned:"):]
-		if j := strings.Index(s, ","); j >= 0 {
-			s = s[:j]
-		}
-		return strings.TrimSpace(s)
-	}
-	return ""
+	return s[len("OK\x1e"):]
+}
+
+// inputIP 弹出系统输入框获取对端直连 IP；取消或为空返回 ""
+func inputIP() string {
+	return strings.TrimSpace(inputText("ClipSync 直连", "输入要对端直连的 IP 地址（如 192.168.1.100）", ""))
 }
 
 // selectPaths 弹出系统面板，允许同时多选多个文件和文件夹；取消返回 nil

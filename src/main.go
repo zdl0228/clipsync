@@ -64,10 +64,10 @@ func initLog() {
 
 func onReady() {
 	name, _ := os.Hostname()
-	log.Printf("配置目录: %s, 密钥: %s, 系统: %s/%s, 主机名: %s", configDir, token, runtime.GOOS, runtime.GOARCH, name)
-	if token == defaultToken {
-		log.Println("警告: 正在使用内置默认配对密钥；同网段任何 ClipSync 都能通过密钥校验，" +
-			"接入改为由「接入需确认」拦截。建议在 config.json 中为本机设置独立 token。")
+	log.Printf("配置目录: %s, 密钥: %s, 系统: %s/%s, 主机名: %s", configDir, getToken(), runtime.GOOS, runtime.GOARCH, name)
+	if getToken() == defaultToken {
+		log.Println("警告: 正在使用内置默认配对密钥；同网段任何 ClipSync 只要密钥相同就能配对并收发剪贴板。" +
+			"建议点托盘「配对密钥…」改成自己的密钥，两台设备填同一个值。")
 	}
 	netw = NewNetwork(name)
 	clip = NewClipboard()
@@ -152,8 +152,6 @@ func onReady() {
 	mDirect := systray.AddMenuItem("直连指定 IP…", "")
 	mBroadcast := systray.AddMenuItem("自动发现广播", "")
 	mBroadcast.Check()
-	mConfirm := systray.AddMenuItem("接入需确认: 开", "")
-	updateConfirmMenu(mConfirm)
 	systray.AddSeparator()
 
 	// 右键发送（仅 Windows）：默认开启；开启时幂等刷新注册表（自动修正 exe 路径），关闭时移除
@@ -222,19 +220,11 @@ func onReady() {
 	netw.OnPeerChange(func(ip string, peer string, online bool) {
 		if online {
 			mOnline.SetTitle("已连接: " + peer)
-			// 首次配对成功发系统通知；重连同一设备不重复提示
-			pairedMu.Lock()
-			first := !pairedSet[peer]
-			if first {
-				pairedSet[peer] = true
-			}
-			pairedMu.Unlock()
-			if first {
-				addPaired(peer) // 持久化，重启后不再当作新配对重复提示
+			// 首次配对发系统通知；重连同一设备只轻量提示
+			if firstPair(peer) {
 				log.Printf("配对新设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已配对新设备：%s", peer))
 			} else {
-				// 已配对设备重连：轻量提醒"已连接"，不再重复"新配对"
 				log.Printf("已连接设备: %s", peer)
 				notify("ClipSync", fmt.Sprintf("已连接设备：%s", peer))
 			}
@@ -279,15 +269,6 @@ func onReady() {
 			} else {
 				mBroadcast.Uncheck()
 			}
-		}
-	}()
-
-	go func() {
-		for range mConfirm.ClickedCh {
-			next := !getRequireConfirm()
-			setRequireConfirm(next)
-			log.Printf("接入需确认: %s", map[bool]string{true: "开", false: "关"}[next])
-			updateConfirmMenu(mConfirm)
 		}
 	}()
 
@@ -351,11 +332,33 @@ func onReady() {
 
 	go func() {
 		for range mToken.ClickedCh {
-			msg := "本机配对密钥：" + token + "\n\n请让两台设备的 config.json 中 token 保持此值一致，两端才能加密连接。"
-			if token == defaultToken {
-				msg += "\n\n⚠️ 当前仍是内置默认密钥：同网段任何装了 ClipSync 的设备都能通过密钥校验。" +
-					"「接入需确认」会拦下陌生设备，但建议改成自己的密钥 —— 编辑 config.json 里的 token，" +
-					"两台设备填同一个值后重启。"
+			cur := getToken()
+			v := inputText("ClipSync 配对密钥",
+				"当前配对密钥（可改成自己的）。两台设备填写相同的密钥即可自动配对，"+
+					"不同则无法连接。4~64 个字符，不含空格与引号。", cur)
+			v = strings.TrimSpace(v)
+			if v == "" || v == cur {
+				continue // 取消，或没有改动
+			}
+			nv, err := normalizeToken(v)
+			if err != nil {
+				dialog.Message("%s", err.Error()).Error()
+				continue
+			}
+			if err := saveToken(nv); err != nil {
+				log.Printf("保存配对密钥失败: %v", err)
+				dialog.Message("保存失败：%v", err).Error()
+				continue
+			}
+			log.Printf("配对密钥已更新（%d 个字符，%s）", len([]rune(nv)),
+				map[bool]string{true: "仍是内置默认值", false: "已自定义"}[nv == defaultToken])
+			// 用新密钥重建连接：对端若仍是旧密钥会认证失败，改完自动恢复
+			netw.RefreshConnections()
+			msg := "配对密钥已保存：" + nv + "\n\n已用新密钥重新连接。"
+			if nv == defaultToken {
+				msg += "\n\n⚠️ 这是内置默认密钥，同网段装了 ClipSync 的设备都能连上，建议改成自己的。"
+			} else {
+				msg += "\n另一台设备也要改成同一个密钥才能配对。"
 			}
 			dialog.Message("%s", msg).Info()
 		}

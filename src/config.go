@@ -9,18 +9,41 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // 配置目录：macOS ~/Library/Application Support/clipsync，Windows %AppData%/clipsync
 var configDir string
 
-// token 是设备间共享的配对密钥，两端必须一致才能通信；可手动编辑 config.json 修改
-var token string
+// token 是设备间共享的配对密钥，两端填同一个值即可配对；
+// 运行中可通过托盘「配对密钥…」修改，因此读写一律走 getToken/setToken，
+// 避免托盘协程写入与网络协程读取之间形成数据竞争。
+var (
+	tokenMu sync.RWMutex
+	token   string
+)
+
+// getToken 读取当前配对密钥
+func getToken() string {
+	tokenMu.RLock()
+	defer tokenMu.RUnlock()
+	return token
+}
+
+// setToken 更新内存中的配对密钥（持久化由 saveToken 负责）
+func setToken(v string) {
+	tokenMu.Lock()
+	token = v
+	tokenMu.Unlock()
+}
 
 func init() {
 	initConfig()
@@ -30,10 +53,7 @@ type configFile struct {
 	Token       string   `json:"token"`
 	AutoStart   string   `json:"autoStart"`     // "on"/"off"，记录开机自启偏好
 	ContextMenu string   `json:"contextMenu"`   // "on"/"off"，记录 Windows 右键发送偏好
-	Paired      []string `json:"pairedDevices"` // 已配对设备名，持久化后重连/重启不再重复提示"新配对"
-	// RequireConfirm "off" 时关闭"陌生设备接入需本机确认"，未设置视为开启。
-	// 默认开启：即使两端都用内置默认密钥，同网段的陌生设备也无法静默接入并读取剪贴板。
-	RequireConfirm string `json:"requireConfirm"`
+	Paired      []string `json:"pairedDevices"` // 已配对设备名，仅用于"首次配对"提示去重
 }
 
 // cfgMu 串行化对 config.json 的读写：托盘开关（开机启动/右键发送）在各自
@@ -99,25 +119,49 @@ func setContextMenuPref(v string) {
 	writeConfigLocked(c)
 }
 
-// getRequireConfirm 是否需要"陌生设备接入经本机确认"；未设置时默认开启，
-// 只有显式写入 "off" 才关闭
-func getRequireConfirm() bool {
-	cfgMu.Lock()
-	defer cfgMu.Unlock()
-	return readConfigLocked().RequireConfirm != "off"
+// normalizeToken 校验并规范化用户输入的配对密钥。
+// 规则：去首尾空白后 4~64 个字符；不含空白与控制字符（IPC 用换行分隔首行，
+// 密钥里混入换行会把协议搞乱），不含引号（对话框脚本转义后易出错）。
+func normalizeToken(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", fmt.Errorf("密钥不能为空")
+	}
+	n := utf8.RuneCountInString(s)
+	if n < 4 {
+		return "", fmt.Errorf("密钥太短：至少 4 个字符（当前 %d 个）", n)
+	}
+	if n > 64 {
+		return "", fmt.Errorf("密钥太长：最多 64 个字符（当前 %d 个）", n)
+	}
+	for _, r := range s {
+		switch {
+		case unicode.IsSpace(r):
+			return "", fmt.Errorf("密钥不能包含空格或换行")
+		case unicode.IsControl(r):
+			return "", fmt.Errorf("密钥不能包含控制字符")
+		case r == '"' || r == '\'' || r == '\\':
+			return "", fmt.Errorf("密钥不能包含引号或反斜杠")
+		}
+	}
+	return s, nil
 }
 
-// setRequireConfirm 记录接入确认偏好（不覆盖其它字段）
-func setRequireConfirm(on bool) {
+// saveToken 修改配对密钥：先写 config.json（不覆盖 autoStart/contextMenu 等字段），
+// 成功后再更新内存值，最后返回生效的新密钥。
+func saveToken(v string) error {
 	cfgMu.Lock()
-	defer cfgMu.Unlock()
 	c := readConfigLocked()
-	if on {
-		c.RequireConfirm = "on"
-	} else {
-		c.RequireConfirm = "off"
-	}
+	c.Token = v
+	// writeConfigLocked 内部失败不返回错误；这里用回读校验确保真的落盘
 	writeConfigLocked(c)
+	got := readConfigLocked().Token
+	cfgMu.Unlock()
+	if got != v {
+		return fmt.Errorf("写入 config.json 失败，密钥未生效")
+	}
+	setToken(v)
+	return nil
 }
 
 func initConfig() {
@@ -132,8 +176,9 @@ func initConfig() {
 	loadToken()
 }
 
-// defaultToken 内置默认配对密钥：两端一致即可加密连接，开箱即用
-// 如需自定义，可在 config.json 中配置 token，程序会优先采用自定义值
+// defaultToken 内置默认配对密钥：两端一致即可配对，开箱即用。
+// 同网段只要装了 ClipSync 且密钥相同就能接入，因此建议改成自己的密钥
+// （托盘「配对密钥…」可直接改，两台设备填同一个值）。
 const defaultToken = "clipsync-2026"
 
 func loadToken() {
@@ -141,10 +186,10 @@ func loadToken() {
 	c := readConfigLocked()
 	cfgMu.Unlock()
 	if c.Token != "" {
-		token = c.Token
+		setToken(c.Token)
 		return
 	}
-	token = defaultToken
+	setToken(defaultToken)
 }
 
 // getPairedMap 读取已配对设备集合；进程重启后仍记住，避免每次启动重复提示"新配对"

@@ -9,16 +9,63 @@ import (
 	"syscall"
 )
 
-// inputIP 弹出系统输入框获取对端直连 IP；取消或为空返回 ""
-func inputIP() string {
-	ps := `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::InputBox("输入要对端直连的 IP 地址（如 192.168.1.100）", "ClipSync 直连", "")`
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
+// psQuote 把文本包成 PowerShell 单引号字符串（内部单引号双写）
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// inputText 弹出输入框，返回用户输入（默认值预填）；取消返回 ""。
+// 用 WinForms 而非 VisualBasic InputBox：后者宽度写死、长密钥显示不全，
+// 也不能可靠预填。窗口在 -STA 下才能稳定弹出。
+func inputText(title, prompt, def string) string {
+	ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" +
+		"Add-Type -AssemblyName System.Windows.Forms\n" +
+		"Add-Type -AssemblyName System.Drawing\n" +
+		"$form = New-Object System.Windows.Forms.Form\n" +
+		"$form.Text = " + psQuote(title) + "\n" +
+		"$form.StartPosition = 'CenterScreen'\n" +
+		"$form.FormBorderStyle = 'FixedDialog'\n" +
+		"$form.MinimizeBox = $false\n" +
+		"$form.MaximizeBox = $false\n" +
+		"$form.Size = New-Object System.Drawing.Size(470, 200)\n" +
+		"$label = New-Object System.Windows.Forms.Label\n" +
+		"$label.Location = New-Object System.Drawing.Point(14, 12)\n" +
+		"$label.Size = New-Object System.Drawing.Size(430, 38)\n" +
+		"$label.Text = " + psQuote(prompt) + "\n" +
+		"$box = New-Object System.Windows.Forms.TextBox\n" +
+		"$box.Location = New-Object System.Drawing.Point(14, 56)\n" +
+		"$box.Size = New-Object System.Drawing.Size(430, 24)\n" +
+		"$box.Text = " + psQuote(def) + "\n" +
+		"$ok = New-Object System.Windows.Forms.Button\n" +
+		"$ok.Text = '确定'\n" +
+		"$ok.Location = New-Object System.Drawing.Point(270, 100)\n" +
+		"$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK\n" +
+		"$cancel = New-Object System.Windows.Forms.Button\n" +
+		"$cancel.Text = '取消'\n" +
+		"$cancel.Location = New-Object System.Drawing.Point(360, 100)\n" +
+		"$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel\n" +
+		"$form.Controls.Add($label)\n" +
+		"$form.Controls.Add($box)\n" +
+		"$form.Controls.Add($ok)\n" +
+		"$form.Controls.Add($cancel)\n" +
+		"$form.AcceptButton = $ok\n" +
+		"$form.CancelButton = $cancel\n" +
+		"$form.Add_Shown({ $box.SelectAll(); $box.Focus() })\n" +
+		"if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $box.Text } else { '' }"
+	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-Command", ps)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := cmd.Output()
 	if err != nil {
+		log.Printf("输入框执行失败: %v", err)
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	s := strings.TrimSpace(string(out))
+	return strings.TrimPrefix(s, "\uFEFF") // 去掉可能的 BOM
+}
+
+// inputIP 弹出输入框获取对端直连 IP；取消或为空返回 ""
+func inputIP() string {
+	return strings.TrimSpace(inputText("ClipSync 直连", "输入要对端直连的 IP 地址（如 192.168.1.100）", ""))
 }
 
 // selectPaths 弹出系统原生多选文件对话框；取消返回 nil

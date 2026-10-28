@@ -19,28 +19,20 @@ func init() {
 	pairedMu.Unlock()
 }
 
-// isPaired 该设备名是否已受信任（持久化在 config.json 的 pairedDevices 中）
-func isPaired(name string) bool {
+// firstPair 记下"该设备首次配对"（用于发通知，重连不重复提示），
+// 返回本次是否为首次；首次会持久化到 config.json，重启后不再误报"新配对"
+func firstPair(name string) bool {
 	if name == "" {
 		return false
 	}
 	pairedMu.Lock()
-	defer pairedMu.Unlock()
-	return pairedSet[name]
-}
-
-// markPaired 把设备标记为受信任并持久化；已存在则直接返回
-func markPaired(name string) {
-	if name == "" {
-		return
-	}
-	pairedMu.Lock()
-	already := pairedSet[name]
+	first := !pairedSet[name]
 	pairedSet[name] = true
 	pairedMu.Unlock()
-	if !already {
+	if first {
 		addPaired(name)
 	}
+	return first
 }
 
 // 设备列表/发送目标子菜单槽位
@@ -79,17 +71,6 @@ func updateAutoStartMenu(m *systray.MenuItem) {
 		m.SetTitle("开机启动: 开")
 	} else {
 		m.SetTitle("开机启动: 关")
-	}
-}
-
-// updateConfirmMenu 同步菜单显示的"接入需确认"状态
-func updateConfirmMenu(m *systray.MenuItem) {
-	if getRequireConfirm() {
-		m.SetTitle("接入需确认: 开")
-		m.Check()
-	} else {
-		m.SetTitle("接入需确认: 关")
-		m.Uncheck()
 	}
 }
 

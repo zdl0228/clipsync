@@ -134,7 +134,7 @@ func (n *Network) helloPacket() []byte {
 }
 
 func (n *Network) authPacket() []byte {
-	return PackPacket(PacketHeader{Type: PacketAuth, DeviceName: n.deviceName, Token: token}, nil)
+	return PackPacket(PacketHeader{Type: PacketAuth, DeviceName: n.deviceName, Token: getToken()}, nil)
 }
 
 // ---------- UDP 发现 ----------
@@ -240,7 +240,7 @@ func (n *Network) Peers() []PeerInfo {
 // SendTo 仅向指定对端发送数据（文件发送等多设备场景按目标选择）
 func (n *Network) SendTo(ip string, h PacketHeader, body []byte) {
 	h.DeviceName = n.deviceName
-	h.Token = token
+	h.Token = getToken()
 	h.BodyLen = len(body)
 	pkt := PackPacket(h, body)
 
@@ -473,11 +473,9 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 		}
 
 		if !authed {
-			if h.Type == PacketAuth && h.Token == token {
-				if !n.approvePeer(conn, ip, h.DeviceName) {
-					log.Printf("用户拒绝设备接入，断开: %s @ %s", h.DeviceName, ip)
-					break
-				}
+			// 密钥相同即配对成功：不再有"陌生设备需本机确认"这一步，
+			// 谁能收到剪贴板完全由密钥决定，所以要改成自己的密钥。
+			if h.Type == PacketAuth && h.Token == getToken() {
 				authed = true
 				n.mu.Lock()
 				if p := n.peers[ip]; p != nil {
@@ -498,7 +496,7 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 			break
 		}
 
-		if h.Token != token {
+		if h.Token != getToken() {
 			continue
 		}
 		// 心跳判定：记录最近一次收到该对端任意包的时间
@@ -517,25 +515,33 @@ func (n *Network) readLoop(ip string, conn net.Conn) {
 	n.dropPeer(ip, conn)
 }
 
-// approvePeer 陌生设备首次接入时的本机确认。
-// 两端默认共用内置密钥（开箱即用），因此 token 一致只能证明"对方装了 ClipSync"，
-// 不能证明是本机信任的设备。凡未在 config.json 的 pairedDevices 中的设备，
-// 首次接入必须先由本机用户点确认，之后持久化、不再打扰。
-// 返回 false 表示拒绝接入；requireConfirm 关闭或设备已受信任时直接放行。
-func (n *Network) approvePeer(conn net.Conn, ip, name string) bool {
-	if !getRequireConfirm() || isPaired(name) {
-		return true
+// RefreshConnections 配对密钥变更后重建所有连接。
+// 已认证的会话是用旧密钥建立的，若留着会出现"菜单显示在线、但包因密钥不符被丢弃"
+// 的假在线状态，所以先全部断开，再按已知 IP 主动重拨并触发一次广播，
+// 让双方用新密钥重新认证；对端若仍是旧密钥会认证失败（日志可见），改完自动恢复。
+func (n *Network) RefreshConnections() {
+	type target struct {
+		ip   string
+		conn net.Conn
 	}
-	// 弹窗可能停留很久，先解除未认证连接的 10s 读超时，
-	// 否则用户还在看对话框，连接就被判超时断开了
-	conn.SetReadDeadline(time.Time{})
-	ok := confirmPeer(name, ip)
-	if !ok {
-		return false
+	n.mu.RLock()
+	targets := make([]target, 0, len(n.peers))
+	for ip, p := range n.peers {
+		targets = append(targets, target{ip: ip, conn: p.conn})
 	}
-	markPaired(name)
-	log.Printf("用户已确认接入: %s @ %s", name, ip)
-	return true
+	n.mu.RUnlock()
+
+	for _, t := range targets {
+		n.dropPeer(t.ip, t.conn)
+	}
+	// 立即广播一次，让对端也尽快用新密钥回连
+	select {
+	case n.helloTrigger <- struct{}{}:
+	default:
+	}
+	for _, t := range targets {
+		go n.dialPeer(t.ip)
+	}
 }
 
 // dropPeer 按 (ip, conn) 匹配删除；若该 ip 的连接已被新连接替换则不动，避免误删新连接
@@ -560,7 +566,7 @@ func (n *Network) dropPeer(ip string, conn net.Conn) {
 // Send 广播到所有已认证的对端
 func (n *Network) Send(h PacketHeader, body []byte) {
 	h.DeviceName = n.deviceName
-	h.Token = token
+	h.Token = getToken()
 	h.BodyLen = len(body)
 	pkt := PackPacket(h, body)
 
