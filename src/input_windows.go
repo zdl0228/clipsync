@@ -7,9 +7,12 @@ import (
 	"log"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/sqweek/dialog"
+	"github.com/TheTitanrain/w32"
 )
 
 // createNoWindow 让子进程不创建控制台窗口（CREATE_NO_WINDOW）。
@@ -41,52 +44,175 @@ func psQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
-// inputText 弹出输入框，返回用户输入（默认值预填）；取消返回 ""。
-// 用 WinForms 而非 VisualBasic InputBox：后者宽度写死、长密钥显示不全，
-// 也不能可靠预填。窗口在 -STA 下才能稳定弹出。
-func inputText(title, prompt, def string) string {
-	ps := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n" +
-		"Add-Type -AssemblyName System.Windows.Forms\n" +
-		"Add-Type -AssemblyName System.Drawing\n" +
-		"$form = New-Object System.Windows.Forms.Form\n" +
-		"$form.Text = " + psQuote(title) + "\n" +
-		"$form.StartPosition = 'CenterScreen'\n" +
-		"$form.FormBorderStyle = 'FixedDialog'\n" +
-		"$form.MinimizeBox = $false\n" +
-		"$form.MaximizeBox = $false\n" +
-		"$form.TopMost = $true\n" +
-		"$form.Size = New-Object System.Drawing.Size(480, 220)\n" +
-		"$label = New-Object System.Windows.Forms.Label\n" +
-		"$label.Location = New-Object System.Drawing.Point(14, 12)\n" +
-		"$label.Size = New-Object System.Drawing.Size(440, 56)\n" +
-		"$label.Text = " + psQuote(prompt) + "\n" +
-		"$box = New-Object System.Windows.Forms.TextBox\n" +
-		"$box.Location = New-Object System.Drawing.Point(14, 72)\n" +
-		"$box.Size = New-Object System.Drawing.Size(440, 24)\n" +
-		"$box.Text = " + psQuote(def) + "\n" +
-		"$ok = New-Object System.Windows.Forms.Button\n" +
-		"$ok.Text = '确定'\n" +
-		"$ok.Location = New-Object System.Drawing.Point(280, 118)\n" +
-		"$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK\n" +
-		"$cancel = New-Object System.Windows.Forms.Button\n" +
-		"$cancel.Text = '取消'\n" +
-		"$cancel.Location = New-Object System.Drawing.Point(370, 118)\n" +
-		"$cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel\n" +
-		"$form.Controls.Add($label)\n" +
-		"$form.Controls.Add($box)\n" +
-		"$form.Controls.Add($ok)\n" +
-		"$form.Controls.Add($cancel)\n" +
-		"$form.AcceptButton = $ok\n" +
-		"$form.CancelButton = $cancel\n" +
-		"$form.Add_Shown({ $form.Activate(); $box.SelectAll(); $box.Focus() })\n" +
-		"if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $box.Text } else { '' }"
-	out, err := psRun(ps)
-	if err != nil {
-		log.Printf("输入框执行失败: %v", err)
-		dialog.Message("弹出输入框失败：%v", err).Error()
+// ---- 纯 Win32 输入框（替代 PowerShell+WinForms）----
+//
+// 旧实现每次弹窗都要冷启动一个 powershell.exe 进程，再加载
+// System.Windows.Forms / System.Drawing 程序集，点"设置密钥"要等 1~3 秒。
+// 这里改为直接调 Win32 创建窗口，弹出是瞬时的。
+
+const inputBoxClass = "ClipSync.InputBox"
+
+// 输入框控件 ID
+const (
+	idcInputLabel = 100
+	idcInputEdit  = 101
+)
+
+var (
+	inputBoxOnce sync.Once
+	inputEditHwnd w32.HWND
+	inputResult   string
+)
+
+// inputWndProc 输入框主窗口的窗口过程。回调运行在系统线程上，只做轻量纯 Win32
+// 调用（读编辑框文本、销毁窗口、退出消息循环），不阻塞，安全。
+func inputWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
+	h := w32.HWND(hwnd)
+	switch msg {
+	case w32.WM_COMMAND:
+		switch w32.LOWORD(uint32(wParam)) {
+		case uint16(w32.IDOK):
+			inputResult = w32.GetWindowText(inputEditHwnd)
+			w32.DestroyWindow(h)
+			return 0
+		case uint16(w32.IDCANCEL):
+			inputResult = ""
+			w32.DestroyWindow(h)
+			return 0
+		}
+	case w32.WM_CLOSE:
+		w32.DestroyWindow(h)
+		return 0
+	case w32.WM_DESTROY:
+		w32.PostQuitMessage(0)
+		return 0
+	}
+	return w32.DefWindowProc(h, msg, wParam, lParam)
+}
+
+// registerInputBoxClass 注册输入框窗口类（进程内只注册一次）
+func registerInputBoxClass() {
+	inst := w32.GetModuleHandle("")
+	wc := w32.WNDCLASSEX{
+		Size:       uint32(unsafe.Sizeof(w32.WNDCLASSEX{})),
+		Style:      w32.CS_HREDRAW | w32.CS_VREDRAW,
+		WndProc:    syscall.NewCallback(inputWndProc),
+		Instance:   inst,
+		Cursor:     w32.LoadCursor(0, w32.MakeIntResource(uint16(w32.IDC_ARROW))),
+		Background: w32.HBRUSH(w32.COLOR_BTNFACE + 1), // 系统对话框底色
+		ClassName:  syscall.StringToUTF16Ptr(inputBoxClass),
+	}
+	w32.RegisterClassEx(&wc)
+}
+
+// wrapText 把长文本按固定字符数折行，供提示标签多行显示
+func wrapText(s string, width int) string {
+	rs := []rune(s)
+	if len(rs) <= width {
+		return s
+	}
+	var b strings.Builder
+	for i, r := range rs {
+		if i > 0 && i%width == 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// nativeInputText 弹输入框并阻塞到用户确定/取消。确定返回编辑框内容，取消返回 ""。
+func nativeInputText(title, prompt, def string) string {
+	inputResult = ""
+	inputEditHwnd = 0
+
+	inputBoxOnce.Do(registerInputBoxClass)
+
+	inst := w32.GetModuleHandle("")
+	style := uint(w32.WS_OVERLAPPED | w32.WS_CAPTION | w32.WS_SYSMENU)
+
+	// 客户区按 480x220 设计，用 AdjustWindowRect 换算成含标题栏/边框的窗口尺寸
+	rc := w32.RECT{Right: 480, Bottom: 220}
+	w32.AdjustWindowRect(&rc, style, false)
+	width := int(rc.Right - rc.Left)
+	height := int(rc.Bottom - rc.Top)
+
+	// 屏幕居中
+	x := (w32.GetSystemMetrics(w32.SM_CXSCREEN) - width) / 2
+	y := (w32.GetSystemMetrics(w32.SM_CYSCREEN) - height) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	hwnd := w32.CreateWindowEx(
+		uint(w32.WS_EX_TOPMOST),
+		syscall.StringToUTF16Ptr(inputBoxClass),
+		syscall.StringToUTF16Ptr(title),
+		style,
+		x, y, width, height,
+		0, 0, inst, nil)
+	if hwnd == 0 {
+		log.Printf("输入框创建失败")
 		return ""
 	}
-	return out
+
+	labelHwnd := w32.CreateWindowEx(0,
+		syscall.StringToUTF16Ptr("STATIC"),
+		syscall.StringToUTF16Ptr(wrapText(prompt, 30)),
+		uint(w32.WS_CHILD|w32.WS_VISIBLE|w32.SS_LEFT),
+		14, 12, 452, 56, hwnd, w32.HMENU(idcInputLabel), inst, nil)
+
+	editHwnd := w32.CreateWindowEx(
+		uint(w32.WS_EX_CLIENTEDGE),
+		syscall.StringToUTF16Ptr("EDIT"),
+		nil,
+		uint(w32.WS_CHILD|w32.WS_VISIBLE|w32.WS_TABSTOP|w32.ES_AUTOHSCROLL|w32.ES_LEFT),
+		14, 72, 452, 24, hwnd, w32.HMENU(idcInputEdit), inst, nil)
+	inputEditHwnd = editHwnd
+	w32.SetWindowText(editHwnd, def)
+	w32.SendMessage(editHwnd, w32.EM_SETSEL, 0, ^uintptr(0)) // 全选，方便直接覆盖
+
+	okHwnd := w32.CreateWindowEx(0,
+		syscall.StringToUTF16Ptr("BUTTON"),
+		syscall.StringToUTF16Ptr("确定"),
+		uint(w32.WS_CHILD|w32.WS_VISIBLE|w32.WS_TABSTOP|w32.BS_DEFPUSHBUTTON),
+		280, 118, 84, 28, hwnd, w32.HMENU(w32.IDOK), inst, nil)
+	cancelHwnd := w32.CreateWindowEx(0,
+		syscall.StringToUTF16Ptr("BUTTON"),
+		syscall.StringToUTF16Ptr("取消"),
+		uint(w32.WS_CHILD|w32.WS_VISIBLE|w32.WS_TABSTOP|w32.BS_PUSHBUTTON),
+		372, 118, 84, 28, hwnd, w32.HMENU(w32.IDCANCEL), inst, nil)
+
+	// 统一系统 GUI 字体（与标准对话框一致）
+	if font := w32.GetStockObject(w32.DEFAULT_GUI_FONT); font != 0 {
+		for _, c := range []w32.HWND{labelHwnd, editHwnd, okHwnd, cancelHwnd} {
+			w32.SendMessage(c, w32.WM_SETFONT, uintptr(font), 1)
+		}
+	}
+
+	w32.ShowWindow(hwnd, w32.SW_SHOW)
+	w32.UpdateWindow(hwnd)
+	w32.SetForegroundWindow(hwnd)
+	w32.SetFocus(editHwnd)
+
+	// 消息循环；IsDialogMessage 让 Tab 切换焦点、回车触发"确定"、Esc 触发"取消"
+	var msg w32.MSG
+	for w32.GetMessage(&msg, 0, 0, 0) > 0 {
+		if !w32.IsDialogMessage(hwnd, &msg) {
+			w32.TranslateMessage(&msg)
+			w32.DispatchMessage(&msg)
+		}
+	}
+
+	return inputResult
+}
+
+// inputText 弹出输入框，返回用户输入（默认值预填）；取消返回 ""。
+func inputText(title, prompt, def string) string {
+	return nativeInputText(title, prompt, def)
 }
 
 // inputIP 弹出输入框获取对端直连 IP；取消或为空返回 ""
