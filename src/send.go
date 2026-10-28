@@ -59,6 +59,12 @@ func sendFileToRel(ip string, path string, rel string, silent bool) bool {
 		return false
 	}
 	size := stat.Size()
+	// 发送端也要卡上限：接收端对超过 maxRecvFileBytes 的 file_meta 直接拒绝，
+	// 不设这道会白白把整个超大文件读完、发完（带宽全烧），对端却从第一块就丢弃。
+	if size > maxRecvFileBytes {
+		fail("文件超过 %d GB，无法发送", maxRecvFileBytes/(1024*1024*1024))
+		return false
+	}
 	name := filepath.Base(path)
 	chunkCount := int((size + int64(FileChunkSize) - 1) / int64(FileChunkSize))
 	if chunkCount == 0 {

@@ -223,9 +223,6 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 		return
 	}
 	if done {
-		if short {
-			log.Printf("接收不完整：%s 声明 %d 字节，实收 %d 字节（对端可能中断）", rs.fileName, total, got)
-		}
 		// 只有"还登记在册"时才收尾：如果这期间连接断开触发了 clearRecv
 		// （临时文件已删），再跑 finishReceive 就是把文件往不存在的源上搬，
 		// 会误报"文件接收失败：无法保存到桌面"
@@ -236,6 +233,20 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 		}
 		recvMu.Unlock()
 		if owned {
+			if short {
+				// 块数够了但字节不够：对端声明的大小和实际发的不符（发送中
+				// 文件被截断、或对端有 bug）。这种半截文件保存到桌面只会让
+				// 用户拿到一个打不开的东西，丢弃并明确提示，而不是静默留残次品。
+				rs.m.Lock()
+				rs.closed = true
+				rs.tmpFile.Close()
+				rs.m.Unlock()
+				os.Remove(rs.tmpPath)
+				progressEnd()
+				log.Printf("接收不完整，已丢弃：%s 声明 %d 字节，实收 %d 字节", rs.fileName, total, got)
+				notify("ClipSync", fmt.Sprintf("文件接收不完整，已丢弃：%s", rs.fileName))
+				return
+			}
 			go finishReceive(rs)
 		}
 	}
