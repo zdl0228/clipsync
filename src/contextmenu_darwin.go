@@ -3,7 +3,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -28,9 +30,12 @@ import (
 // →「发送到 ClipSync」。若不显示，见 开发手册.md「Finder 服务不出现怎么办」。
 
 const (
-	ctxMenuLabel   = "Finder 右键发送"
-	ctxServiceName = "SendToClipSync.workflow"
-	ctxServiceID   = "com.clipsync.send"
+	ctxMenuLabel = "Finder 右键发送"
+	// 目录名不能沿用 SendToClipSync.workflow：pbs 以「目录路径」为 key 缓存服务
+	// 条目，同路径重装不刷新内容，旧条目（带 NSIconName 的第一版）永远钉在缓存里。
+	// 换目录名 + 换 bundle ID 才强制了重新注册。
+	ctxServiceName = "ClipSyncSend.workflow"
+	ctxServiceID   = "com.clipsync.send.v2"
 	ctxServiceMenu = "发送到 ClipSync"
 )
 
@@ -78,10 +83,6 @@ func serviceInfoPlist() string {
 	<key>NSServices</key>
 	<array>
 		<dict>
-			<key>NSBackgroundColorName</key>
-			<string>background</string>
-			<key>NSIconName</key>
-			<string>NSActionTemplate</string>
 			<key>NSMenuItem</key>
 			<dict>
 				<key>default</key>
@@ -89,11 +90,6 @@ func serviceInfoPlist() string {
 			</dict>
 			<key>NSMessage</key>
 			<string>runWorkflowAsService</string>
-			<key>NSRequiredContext</key>
-			<dict>
-				<key>NSApplicationIdentifier</key>
-				<string>com.apple.finder</string>
-			</dict>
 			<key>NSSendFileTypes</key>
 			<array>
 				<string>public.item</string>
@@ -231,38 +227,16 @@ func serviceWorkflowDoc(exe string) string {
 	<dict/>
 	<key>workflowMetaData</key>
 	<dict>
-		<key>applicationBundleID</key>
-		<string>com.apple.finder</string>
-		<key>applicationBundleIDsByPath</key>
-		<dict/>
-		<key>applicationPath</key>
-		<string>/System/Library/CoreServices/Finder.app</string>
-		<key>applicationPaths</key>
-		<array>
-			<string>/System/Library/CoreServices/Finder.app</string>
-		</array>
-		<key>inputTypeIdentifier</key>
-		<string>com.apple.Automator.fileSystemObject</string>
-		<key>outputTypeIdentifier</key>
-		<string>com.apple.Automator.nothing</string>
-		<key>presentationMode</key>
-		<integer>15</integer>
-		<key>processesInput</key>
-		<integer>0</integer>
 		<key>serviceApplicationBundleID</key>
-		<string>com.apple.finder</string>
+		<string></string>
 		<key>serviceApplicationPath</key>
-		<string>/System/Library/CoreServices/Finder.app</string>
+		<string></string>
 		<key>serviceInputTypeIdentifier</key>
 		<string>com.apple.Automator.fileSystemObject</string>
 		<key>serviceOutputTypeIdentifier</key>
 		<string>com.apple.Automator.nothing</string>
 		<key>serviceProcessesInput</key>
 		<integer>0</integer>
-		<key>systemImageName</key>
-		<string>NSActionTemplate</string>
-		<key>useAutomaticInputType</key>
-		<integer>1</integer>
 		<key>workflowTypeIdentifier</key>
 		<string>com.apple.Automator.servicesMenu</string>
 	</dict>
@@ -277,8 +251,124 @@ func serviceWorkflowDoc(exe string) string {
 // pbs（粘贴板服务器）自己会扫描 ~/Library/Services 并重建服务列表，实测装完
 // 不用重启 Finder 就能用；不要顺手调 lsregister —— 它对 .workflow 这种
 // 非 app 包返回 -10811（kLSNotAnApplicationErr），每次启动都会在日志里刷错误。
+// ensureServiceEnabled macOS 默认把**所有第三方服务**的右键菜单项关掉：
+// pbs 的 NSServicesStatus 里每个非 Apple 服务都带 enabled_context_menu = false，
+// 用户在「系统设置 → 键盘 → 键盘快捷键 → 服务」勾选后才会变成 true。
+// 这一步不做，workflow 装得再对、pbs 也认得，右键「服务」里照样什么都没有
+// （2026-10-28 那次"服务里面没有"的真因）。
+//
+// 改法上别用 `defaults write -dict-add`：它会把 1 写成字符串 "1"，
+// 这里要的是布尔。走 export → JSON → 改 → import，全程不碰 plist 语法。
+// 返回 true 表示找到了对应条目并已启用。
+func ensureServiceEnabled() bool {
+	dir, err := os.MkdirTemp("", "clipsync-pbs")
+	if err != nil {
+		return false
+	}
+	defer os.RemoveAll(dir)
+	src := filepath.Join(dir, "pbs.plist")
+	js := filepath.Join(dir, "pbs.json")
+	out := filepath.Join(dir, "pbs.out.plist")
+
+	// pbs 域还不存在时 export 会失败，此时没什么可改的
+	if err := exec.Command("/usr/bin/defaults", "export", "pbs", src).Run(); err != nil {
+		return false
+	}
+	if err := exec.Command("/usr/bin/plutil", "-convert", "json", "-o", js, src).Run(); err != nil {
+		return false
+	}
+	b, err := os.ReadFile(js)
+	if err != nil {
+		return false
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return false
+	}
+	status, _ := doc["NSServicesStatus"].(map[string]any)
+	if status == nil {
+		return false
+	}
+
+	// 键形如 "<bundle id 或 (null)> - <菜单名> - runWorkflowAsService"，
+	// 菜单名在键里会被规范化（实测空格被吃掉），所以只按 ClipSync 匹配
+	found, changed := false, false
+	for k, v := range status {
+		if !strings.Contains(k, "ClipSync") || !strings.Contains(k, "runWorkflowAsService") {
+			continue
+		}
+		found = true
+		m, ok := v.(map[string]any)
+		if !ok {
+			m = map[string]any{}
+			status[k] = m
+		}
+		if m["enabled_context_menu"] == true && m["enabled_services_menu"] == true {
+			continue
+		}
+		m["enabled_context_menu"] = true
+		m["enabled_services_menu"] = true
+		m["presentation_modes"] = map[string]any{
+			"ContextMenu": true, "ServicesMenu": true, "TouchBar": true,
+		}
+		changed = true
+	}
+	if !found || !changed {
+		return found
+	}
+	nb, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return false
+	}
+	if err := os.WriteFile(js, nb, 0600); err != nil {
+		return false
+	}
+	if err := exec.Command("/usr/bin/plutil", "-convert", "binary1", "-o", out, js).Run(); err != nil {
+		return false
+	}
+	if err := exec.Command("/usr/bin/defaults", "import", "pbs", out).Run(); err != nil {
+		return false
+	}
+	log.Println("已在系统服务列表里启用「" + ctxServiceMenu + "」")
+	return true
+}
+
 func refreshServices() {
 	runQuiet("/System/Library/CoreServices/pbs", "-update")
+	// pbs 扫描目录是异步的，刚写进去的 workflow 可能还没进 NSServicesStatus，
+	// 隔一会儿重试几次；这次没找到的话下次启动还会再来一遍
+	found := false
+	for i := 0; i < 10; i++ {
+		if ensureServiceEnabled() {
+			found = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !found {
+		log.Println("pbs 里还看不到服务条目，稍后重启会自动再试")
+	}
+	// pbs 只重建自己的数据库，Finder 是启动时把服务菜单建好后缓存的，
+	// 不重启就一直看不到新条目。只有内容真的变了才会走到这里，
+	// 所以不会每次开机都重启 Finder。
+	runQuiet("/usr/bin/killall", "Finder")
+}
+
+// ctxNeedsRewrite 比较磁盘上已有的 workflow 与新生成的内容。
+// 一致就什么都不做：既省一次写盘，也避免每次启动都重启 Finder。
+func ctxNeedsRewrite(wf string, plist, doc []byte) bool {
+	if b, err := os.ReadFile(filepath.Join(wf, "Contents", "Info.plist")); err != nil || !bytes.Equal(b, plist) {
+		return true
+	}
+	for _, p := range []string{
+		filepath.Join("Contents", "document.wflow"),
+		filepath.Join("Contents", "Resources", "document.wflow"),
+	} {
+		if b, err := os.ReadFile(filepath.Join(wf, p)); err != nil || !bytes.Equal(b, doc) {
+			return true
+		}
+	}
+	return false
 }
 
 // runQuiet 跑一个辅助命令，最多等 5 秒，失败只记日志（不影响主功能）
@@ -305,6 +395,12 @@ func enableContextMenu() error {
 		return err
 	}
 
+	plist := []byte(serviceInfoPlist())
+	doc := []byte(serviceWorkflowDoc(exe))
+	if !ctxNeedsRewrite(wf, plist, doc) {
+		return nil // 已是最新，别动它（重启 Finder 很打扰）
+	}
+
 	// 先写到 .tmp 再整体替换，避免写到一半被 Finder 读到残缺包
 	tmp := wf + ".tmp"
 	if err := os.RemoveAll(tmp); err != nil {
@@ -319,10 +415,9 @@ func enableContextMenu() error {
 			return err
 		}
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "Contents", "Info.plist"), []byte(serviceInfoPlist()), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "Contents", "Info.plist"), plist, 0644); err != nil {
 		return err
 	}
-	doc := []byte(serviceWorkflowDoc(exe))
 	// document.wflow 的位置各版本不一（老的读 Contents/，系统自带的在
 	// Contents/Resources/），两处都写一份，省得某个系统版本上点了没反应
 	for _, p := range []string{
