@@ -14,7 +14,7 @@ import (
 const (
 	ctxMenuDisplay = "发送到 ClipSync"
 	// ctxMenuLabel 托盘菜单里那个开关的名字
-	ctxMenuLabel = "右键发送"
+	ctxMenuLabel = "右键发送文件"
 )
 
 // ctxMenuKeys 需要注册的右键菜单作用域

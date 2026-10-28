@@ -30,7 +30,7 @@ import (
 // →「发送到 ClipSync」。若不显示，见 开发手册.md「Finder 服务不出现怎么办」。
 
 const (
-	ctxMenuLabel = "Finder 右键发送"
+	ctxMenuLabel = "右键发送文件"
 	// 目录名不能沿用 SendToClipSync.workflow：pbs 以「目录路径」为 key 缓存服务
 	// 条目，同路径重装不刷新内容，旧条目（带 NSIconName 的第一版）永远钉在缓存里。
 	// 换目录名 + 换 bundle ID 才强制了重新注册。
