@@ -122,42 +122,49 @@ func selectPaths() []string {
 	return paths
 }
 
+// choosePeersScript 生成多选设备对话框的 AppleScript。
+// 回传同样用 ASCII 30 作分隔符：osascript 把 AppleScript 列表输出成
+// "A (1.2.3.4), B (5.6.7.8)"，**不带引号**，按引号切分永远解析不到东西
+// （多设备时右键发送会一直被当成"用户取消"）；设备名里带逗号也会切错。
+func choosePeersScript(opts []string) string {
+	quoted := make([]string, len(opts))
+	for i, o := range opts {
+		quoted[i] = asQuote(o)
+	}
+	return "set devs to {" + strings.Join(quoted, ", ") + "}\n" +
+		"set chosen to choose from list devs with title \"ClipSync 发送文件\" " +
+		"with prompt \"选择要发送的目标设备（可多选）\" with multiple selections allowed\n" +
+		"if chosen is false then return \"\"\n" +
+		"set out to \"\"\n" +
+		"repeat with d in chosen\n" +
+		"set out to out & d & (ASCII character 30)\n" +
+		"end repeat\n" +
+		"return out"
+}
+
+// parsePeerSelection 按 ASCII 30 切分 choose from list 的结果，去掉空项
+func parsePeerSelection(s string) []string {
+	var res []string
+	for _, item := range strings.Split(strings.TrimRight(s, "\r\n"), "\x1e") {
+		if item = strings.TrimSpace(item); item != "" {
+			res = append(res, item)
+		}
+	}
+	return res
+}
+
 // choosePeers 弹出系统多选框，让用户勾选要发送的目标设备；
 // opts 形如 "设备名 (IP)"；返回选中的条目，取消返回 nil
 func choosePeers(opts []string) []string {
 	if len(opts) == 0 {
 		return nil
 	}
-	var quoted []string
-	for _, o := range opts {
-		e := strings.ReplaceAll(o, `\`, `\\`)
-		e = strings.ReplaceAll(e, `"`, `\"`)
-		quoted = append(quoted, `"`+e+`"`)
-	}
-	script := "set devs to {" + strings.Join(quoted, ", ") + "}\n" +
-		"set chosen to choose from list devs with title \"ClipSync 发送文件\" with prompt \"选择要发送的目标设备（可多选）\" with multiple selections allowed\n" +
-		"if chosen is false then\nreturn \"\"\nelse\nreturn chosen\nend if"
-	out, err := exec.Command("osascript", "-e", script).Output()
+	out, err := exec.Command("osascript", "-e", choosePeersScript(opts)).Output()
 	if err != nil {
 		log.Printf("目标设备选择框执行失败: %v", err)
 		return nil
 	}
-	// 解析形如 {"a", "b"} 的输出，提取引号内文本
-	s := string(out)
-	var res []string
-	start := 0
-	for {
-		i := strings.IndexByte(s[start:], '"')
-		if i < 0 {
-			break
-		}
-		j := strings.IndexByte(s[start+i+1:], '"')
-		if j < 0 {
-			break
-		}
-		res = append(res, s[start+i+1:start+i+1+j])
-		start = start + i + 1 + j + 1
-	}
+	res := parsePeerSelection(string(out))
 	if len(res) == 0 {
 		log.Println("目标设备选择框：未选择，取消")
 		return nil

@@ -168,15 +168,16 @@ func normalizeToken(s string) (string, error) {
 // 成功后再更新内存值，最后返回生效的新密钥。
 func saveToken(v string) error {
 	cfgMu.Lock()
+	defer cfgMu.Unlock()
 	c := readConfigLocked()
 	c.Token = v
 	// writeConfigLocked 内部失败不返回错误；这里用回读校验确保真的落盘
 	writeConfigLocked(c)
-	got := readConfigLocked().Token
-	cfgMu.Unlock()
-	if got != v {
+	if readConfigLocked().Token != v {
 		return fmt.Errorf("写入 config.json 失败，密钥未生效")
 	}
+	// 必须在锁内更新内存值：放到锁外的话，中间有个窗口 config.json 已是新密钥
+	// 而内存还是旧的，此时新建的连接会用旧密钥认证（对端刚改完就会认证失败）
 	setToken(v)
 	return nil
 }
@@ -252,6 +253,8 @@ func loadCert() (tls.Certificate, error) {
 		certPath := filepath.Join(configDir, "cert.pem")
 		keyPath := filepath.Join(configDir, "key.pem")
 		if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+			// 老版本生成的私钥是 0644，这里顺手收紧权限
+			_ = os.Chmod(keyPath, 0600)
 			certCache, certLoadErr = cert, nil
 			return
 		}
@@ -279,14 +282,16 @@ func generateCert(certPath, keyPath string) (tls.Certificate, error) {
 		return tls.Certificate{}, err
 	}
 
-	certOut, err := os.Create(certPath)
+	certOut, err := os.OpenFile(certPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der})
 	certOut.Close()
 
-	keyOut, err := os.Create(keyPath)
+	// 私钥必须 0600：原来用 os.Create（0666 & umask = 0644），
+	// 同一台机器上的其他账户可以直接读走
+	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return tls.Certificate{}, err
 	}

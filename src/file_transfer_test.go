@@ -215,3 +215,42 @@ func TestReservePathAtomic(t *testing.T) {
 		t.Errorf("首个路径应已创建占位文件: %v", err)
 	}
 }
+
+// 连接断开触发 clearRecv 之后，可能还有在途的数据块到达。
+// 原来会往已关闭的临时文件里写，报"磁盘写入错误"（用户收到假的失败提示）。
+// 现在按 closed 标记静默丢弃。
+func TestDataAfterClearIsDropped(t *testing.T) {
+	f, err := os.CreateTemp("", "clipsync-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ip := "192.0.2.99"
+	rs := &recvState{tmpFile: f, tmpPath: f.Name(), fileName: "a.bin", total: 8, chunkCount: 1}
+
+	// 正常登记后再丢弃，模拟"连接断开 → clearRecv"这条真实路径
+	recvMu.Lock()
+	recvs[ip] = rs
+	recvMu.Unlock()
+	clearRecv(ip)
+
+	// 再把已关闭的状态挂回表里，模拟"clearRecv 与后续数据块之间"的窗口
+	recvMu.Lock()
+	recvs[ip] = rs
+	recvMu.Unlock()
+	defer func() {
+		recvMu.Lock()
+		delete(recvs, ip)
+		recvMu.Unlock()
+	}()
+
+	// 不应 panic，也不应写出任何东西
+	handleFileData(ip, &PacketHeader{Type: PacketFileData, ChunkCount: 1}, []byte("01234567"))
+	if _, err := os.Stat(rs.tmpPath); !os.IsNotExist(err) {
+		t.Errorf("临时文件应已被清理: %v", err)
+	}
+	// 关键：不能把这份数据当成一次成功接收保存到桌面
+	if _, err := os.Stat(filepath.Join(desktopDir(), "a.bin")); err == nil {
+		t.Error("已丢弃的接收被误保存到桌面")
+		os.Remove(filepath.Join(desktopDir(), "a.bin"))
+	}
+}

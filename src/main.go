@@ -49,16 +49,17 @@ func main() {
 	systray.Run(onReady, onExit)
 }
 
-// initLog 将日志输出重定向到配置目录（clipsync）下的 ClipSync.log；不可写时回退到主目录
+// initLog 将日志输出重定向到配置目录（clipsync）下的 ClipSync.log；不可写时回退到主目录。
+// 用 0600：日志里会出现文件名、设备名、IP 等个人信息，只有本人需要读。
 func initLog() {
 	dir := configDir
 	path := filepath.Join(dir, "ClipSync.log")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		// 配置目录不可写时回退到用户主目录
 		if home, herr := os.UserHomeDir(); herr == nil && home != "" {
 			path = filepath.Join(home, "ClipSync.log")
-			f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+			f, err = os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		}
 		if err != nil {
 			log.Printf("日志文件打开失败: %v", err)
@@ -66,13 +67,22 @@ func initLog() {
 		}
 	}
 	log.SetOutput(f)
+	// 已存在的日志文件不会因 O_CREATE 的 mode 改变权限，必须显式 chmod 一次
+	_ = f.Chmod(0600)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.Printf("=== ClipSync 日志已启用: %s ===", path)
 }
 
 func onReady() {
 	name, _ := os.Hostname()
-	log.Printf("配置目录: %s, 密钥: %s, 系统: %s/%s, 主机名: %s", configDir, getToken(), runtime.GOOS, runtime.GOARCH, name)
+	// 密钥不写明文进日志：日志文件经常被贴进聊天窗口/工单，而密钥就是
+	// 同网段收发剪贴板的唯一凭证，泄露等于把剪贴板交出去
+	tokenDesc := "内置默认值"
+	if getToken() != defaultToken {
+		tokenDesc = "已自定义"
+	}
+	log.Printf("配置目录: %s, 密钥: %d 个字符（%s）, 系统: %s/%s, 主机名: %s",
+		configDir, len([]rune(getToken())), tokenDesc, runtime.GOOS, runtime.GOARCH, name)
 	if getToken() == defaultToken {
 		log.Println("警告: 正在使用内置默认配对密钥；同网段任何 ClipSync 只要密钥相同就能配对并收发剪贴板。" +
 			"建议点托盘「配对密钥…」改成自己的密钥，两台设备填同一个值。")
@@ -212,15 +222,20 @@ func onReady() {
 				log.Printf("选择发送 %d 个文件/文件夹 → %s", len(paths), ip)
 				// 多选（>1 项）时抑制单条通知，全部完成后统一汇总一条
 				batch := len(paths) > 1
+				ok, failed := 0, 0
 				for _, p := range paths {
 					if st, err := os.Stat(p); err == nil && st.IsDir() {
-						sendFolderTo(ip, p, batch)
+						fo, ff := sendFolderTo(ip, p, batch)
+						ok += fo
+						failed += ff
+					} else if sendFileTo(ip, p, batch) {
+						ok++
 					} else {
-						sendFileTo(ip, p, batch)
+						failed++
 					}
 				}
 				if batch {
-					notify("ClipSync", fmt.Sprintf("已发送 %d 个文件/文件夹", len(paths)))
+					notifyBatchResult("已发送", ok, failed)
 				}
 			}
 		}(s)

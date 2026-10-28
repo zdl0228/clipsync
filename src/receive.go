@@ -28,6 +28,7 @@ type recvState struct {
 	got        int64
 	count      int
 	chunkCount int
+	closed     bool // 临时文件已关闭（clearRecv/finishReceive），后续数据块直接丢弃
 }
 
 // 目录嵌套的防护上限：对端可以随便声明 relPath，不能让它在桌面上
@@ -175,11 +176,17 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 	rs := recvs[ip]
 	recvMu.Unlock()
 	if rs == nil {
-		log.Println("收到数据块但没有接收目标")
+		// 该对端的接收已被丢弃（收到新 file_meta、连接断开时 clearRecv），
+		// 残留的数据块直接忽略，不能当成错误——否则会误报"磁盘写入错误"
 		return
 	}
 	var werr error
 	rs.m.Lock()
+	if rs.closed {
+		// 已被 clearRecv/finishReceive 关闭，静默丢弃
+		rs.m.Unlock()
+		return
+	}
 	// 只写入尚缺的字节数，防止对端多发数据块导致超出声明大小、写入多余字节
 	if need := rs.total - rs.got; need > 0 {
 		if int64(len(body)) > need {
@@ -219,18 +226,27 @@ func handleFileData(ip string, h *PacketHeader, body []byte) {
 		if short {
 			log.Printf("接收不完整：%s 声明 %d 字节，实收 %d 字节（对端可能中断）", rs.fileName, total, got)
 		}
+		// 只有"还登记在册"时才收尾：如果这期间连接断开触发了 clearRecv
+		// （临时文件已删），再跑 finishReceive 就是把文件往不存在的源上搬，
+		// 会误报"文件接收失败：无法保存到桌面"
 		recvMu.Lock()
-		if recvs[ip] == rs {
+		owned := recvs[ip] == rs
+		if owned {
 			delete(recvs, ip)
 		}
 		recvMu.Unlock()
-		go finishReceive(rs)
+		if owned {
+			go finishReceive(rs)
+		}
 	}
 }
 
 // finishReceive 关闭临时文件，保存到桌面（文件夹传输时保存到对应子目录）
 func finishReceive(rs *recvState) {
+	rs.m.Lock()
+	rs.closed = true
 	rs.tmpFile.Close()
+	rs.m.Unlock()
 	progressEnd()
 
 	// 删除失败时的临时文件：不留垃圾，也不留半截文件
@@ -330,6 +346,7 @@ func clearRecv(ip string) {
 	defer recvMu.Unlock()
 	if rs := recvs[ip]; rs != nil {
 		rs.m.Lock()
+		rs.closed = true
 		rs.tmpFile.Close()
 		os.Remove(rs.tmpPath)
 		rs.m.Unlock()

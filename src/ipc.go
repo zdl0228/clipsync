@@ -140,17 +140,21 @@ func ipcHandle(conn net.Conn) {
 	sendPathsToAuthed(paths)
 }
 
-// readIpcLine 读取一行，限制长度防大包
+// readIpcLine 读取一行并限制长度。
+// 用 ReadSlice 而不是 ReadString：后者会先把整行读进内存再检查长度，
+// 本机任何进程都能往 2720 端口发一行 4GB 的垃圾把内存打满。
 func readIpcLine(r *bufio.Reader) (string, error) {
-	s, err := r.ReadString('\n')
-	if err != nil && s == "" {
-		return "", err
-	}
-	s = strings.TrimSpace(s)
-	if len(s) > maxIpcLine {
+	b, err := r.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
 		return "", fmt.Errorf("line too long")
 	}
-	return s, nil
+	if err != nil && len(b) == 0 {
+		return "", err
+	}
+	if len(b) > maxIpcLine {
+		return "", fmt.Errorf("line too long")
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // sendPathsToAuthed 把路径列表发送给目标设备。
@@ -161,18 +165,26 @@ func sendPathsToAuthed(paths []string) {
 		notify("ClipSync", "没有可接收文件的设备在线")
 		return
 	}
+	ok, failed := 0, 0
 	for _, t := range targets {
 		for _, p := range paths {
 			if st, err := os.Stat(p); err == nil && st.IsDir() {
-				sendFolderTo(t.IP, p, true)
+				fo, ff := sendFolderTo(t.IP, p, true)
+				ok += fo
+				failed += ff
 			} else if err == nil {
-				sendFileTo(t.IP, p, true)
+				if sendFileTo(t.IP, p, true) {
+					ok++
+				} else {
+					failed++
+				}
 			} else {
 				log.Printf("右键发送：路径不存在，跳过 %s", p)
+				failed++
 			}
 		}
 	}
-	notify("ClipSync", fmt.Sprintf("已把 %d 个文件/文件夹发送给 %d 台设备", len(paths), len(targets)))
+	notifyBatchResult("已发送", ok, failed)
 }
 
 // pickTargets 选择本次发送的目标设备集合：
@@ -189,22 +201,29 @@ func pickTargets() []PeerInfo {
 	}
 
 	opts := make([]string, len(targets))
+	label := map[string]PeerInfo{}
 	for i, t := range targets {
 		name := t.Name
 		if name == "" {
 			name = t.IP
 		}
 		opts[i] = name + " (" + t.IP + ")"
+		label[opts[i]] = t
 	}
 	sel := choosePeers(opts)
 	if len(sel) == 0 {
 		log.Println("右键发送：用户未选择目标设备，取消")
 		return nil
 	}
-	// 从选中项 "名称 (IP)" 中还原 IP，匹配到目标
-	ipRe := regexp.MustCompile(`\(([0-9.]+)\)`)
+	// 选中项就是原样回传的 "名称 (IP)"，优先精确匹配；
+	// 万一对端名字里也带 "(x.x.x.x)"，精确匹配也不会选错设备
 	var chosen []PeerInfo
+	ipRe := regexp.MustCompile(`\(([0-9.]+)\)$`)
 	for _, s := range sel {
+		if t, ok := label[s]; ok {
+			chosen = append(chosen, t)
+			continue
+		}
 		if m := ipRe.FindStringSubmatch(s); m != nil {
 			for _, t := range targets {
 				if t.IP == m[1] {

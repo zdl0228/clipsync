@@ -145,6 +145,15 @@ func (c *Clipboard) Watch() {
 			if mime == inMime && fingerprint(body) == inKey {
 				continue
 			}
+			if body == nil {
+				// 刚 NoteIncoming、内容还没真正落到剪贴板时读不到东西。
+				// 这时把抑制标志放回去，下一轮再比一次；否则会把自己刚写进去的
+				// 内容当成"本地新变化"发回去（一次多余的双向回环）。
+				c.mu.Lock()
+				c.suppress = true
+				c.mu.Unlock()
+				continue
+			}
 		}
 		if c.onChange != nil {
 			c.onChange()
