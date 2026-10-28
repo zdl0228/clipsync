@@ -57,6 +57,9 @@ VER_MINOR="$(echo "$VER" | cut -d. -f2)"
 VER_PATCH="$(echo "$VER" | cut -d. -f3)"
 : "${VER_MINOR:=0}"
 : "${VER_PATCH:=0}"
+# Windows 版本资源固定四段，而 appVersion 允许只写两段（1.0），缺的位补 0。
+# 直接拼 "$VER.0" 会得到三段 "1.0.0"，goversioninfo 会报错或写出畸形资源。
+FILE_VER="$VER_MAJOR.$VER_MINOR.$VER_PATCH.0"
 
 echo ">>> ClipSync v${VER}（构建 ${BUILD_STAMP}）"
 
@@ -69,7 +72,7 @@ if command -v goversioninfo >/dev/null 2>&1; then
   echo ">>> 生成 Windows 版本资源 ..."
   goversioninfo -arm=false -64=true -o resource_windows_amd64.syso \
     -ver-major "$VER_MAJOR" -ver-minor "$VER_MINOR" -ver-patch "$VER_PATCH" -ver-build 0 \
-    -file-version "$VER.0" -product-version "$VER.0" \
+    -file-version "$FILE_VER" -product-version "$FILE_VER" \
     -product-name "ClipSync" -internal-name "ClipSync" -original-name "ClipSync.exe" \
     -description "ClipSync 跨设备剪贴板/文件同步" -company "ClipSync" \
     -copyright "Copyright (C) 2026 ClipSync" \
@@ -104,9 +107,12 @@ if [ -d "$APP" ] && command -v hdiutil >/dev/null 2>&1; then
   if [ -f "$PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$PLIST" 2>/dev/null \
       || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VER" "$PLIST"
-    # CFBundleVersion 是构建号，和 appBuild 一致，方便对照日志里的 build 时间戳
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_STAMP" "$PLIST" 2>/dev/null \
-      || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_STAMP" "$PLIST"
+    # CFBundleVersion 是构建号。Apple 要求它只能由数字和点组成（1~4 段），
+    # 所以把时间戳的连字符去掉写成 202610282142；日志里的 appBuild 仍保留
+    # 20261028-2142 的可读形式，两者数字部分一致，对照时不会错。
+    PLIST_BUILD="${BUILD_STAMP/-/}"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $PLIST_BUILD" "$PLIST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $PLIST_BUILD" "$PLIST"
     echo ">>> Info.plist 版本号: ${VER}（构建 ${BUILD_STAMP}）"
   fi
 
