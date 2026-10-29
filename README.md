@@ -48,7 +48,7 @@ GOOS=windows GOARCH=amd64 go build -mod=vendor -o ClipSync.exe .  # Windows
 - 在任意设备复制文本或图片，其他已连接设备自动收到
 
 ### 发送文件
-- 托盘菜单 → **发送文件到 ▸** → 选择目标设备 → 选择文件/文件夹
+- 托盘菜单 → **发送文件到** → 选择目标设备 → 选择文件/文件夹
 - 可开启**右键发送**，选中文件右键菜单直接发送（macOS 通过 Finder 服务，Windows 通过右键菜单）
 
 ## ⚙️ 配置

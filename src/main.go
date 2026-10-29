@@ -172,9 +172,9 @@ func onReady() {
 
 	mSync := systray.AddMenuItem("立即同步", "")
 
-	// 发送文件到 目标设备子菜单。标题里带 ▸：系统那个子菜单箭头固定在菜单最右边缘，
-	// 和文字隔着一大段空白，加上 ▸ 让"这是个子菜单"紧跟着文字就能看出来。
-	sendMenu := systray.AddMenuItem("发送文件到 ▸", "")
+	// 发送文件到 目标设备子菜单。macOS 的子菜单箭头「>」固定画在菜单最右边缘、
+	// 无法关闭，所以标题只写「发送文件到」，避免 ▸ 与系统箭头重复。
+	sendMenu := systray.AddMenuItem("发送文件到", "")
 	sendSlots = make([]*deviceSlot, maxSlots)
 	for i := 0; i < maxSlots; i++ {
 		s := &deviceSlot{item: sendMenu.AddSubMenuItem("", "")}
