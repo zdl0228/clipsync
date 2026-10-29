@@ -13,8 +13,9 @@ const (
 	runValue = "ClipSync"
 )
 
-// isAutoStartEnabled 是否已配置开机启动（注册表 Run 项是否存在）
-func isAutoStartEnabled() bool {
+// launchAgentExists Windows 下等价于「Run 注册表值是否存在」。
+// mac 用 LaunchAgent plist 文件，两边名称统一，供 main.go 共用。
+func launchAgentExists() bool {
 	k, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
 	if err != nil {
 		return false
@@ -22,6 +23,11 @@ func isAutoStartEnabled() bool {
 	defer k.Close()
 	_, _, err = k.GetStringValue(runValue)
 	return err == nil
+}
+
+// isAutoStartEnabled 是否已配置开机启动（注册表 Run 项是否存在）
+func isAutoStartEnabled() bool {
+	return launchAgentExists()
 }
 
 // setAutoStart 设置或取消开机启动

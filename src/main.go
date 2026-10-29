@@ -342,8 +342,10 @@ func onReady() {
 		}
 	}()
 
-	// 默认开机启动：除非用户此前明确关闭过，否则启动时自动开启
-	if getAutoStartPref() != "off" && !isAutoStartEnabled() {
+	// 默认开机启动：除非用户此前明确关闭过，否则首次启动时自动开启。
+	// 这里用 launchAgentExists 而非 isAutoStartEnabled：后者在用户从「系统设置」
+	// 取消勾选后也会返回 false，若据此自动重开，会把用户主动关闭的行为又强行打开。
+	if getAutoStartPref() != "off" && !launchAgentExists() {
 		if err := setAutoStart(true); err != nil {
 			log.Printf("自动开启开机启动失败: %v", err)
 		} else {

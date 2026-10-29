@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const launchAgentLabel = "com.local.clipsync"
@@ -16,10 +17,29 @@ func launchAgentPath() string {
 	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
 }
 
-// isAutoStartEnabled 是否已配置开机启动（登录项是否存在）
-func isAutoStartEnabled() bool {
+// launchAgentExists 登录项 plist 是否存在（只看文件，不判断系统是否禁用）
+func launchAgentExists() bool {
 	_, err := os.Stat(launchAgentPath())
 	return err == nil
+}
+
+// isDisabledBySystem launchd 是否已禁用该登录项。
+// 用户在「系统设置 → 通用 → 登录项与扩展」里取消勾选时，macOS 只执行
+// launchctl disable，**plist 文件仍留着**；只靠文件存在与否判断会把「已关闭」
+// 误判成「开启」，造成菜单显示和真实状态不一致。
+func isDisabledBySystem() bool {
+	uid := fmt.Sprintf("%d", os.Getuid())
+	out, err := exec.Command("launchctl", "print-disabled", "gui/"+uid).CombinedOutput()
+	if err != nil {
+		// 查询失败时保守按「未禁用」处理，避免误报成关闭
+		return false
+	}
+	return strings.Contains(string(out), `"`+launchAgentLabel+`" => disabled`)
+}
+
+// isAutoStartEnabled 开机启动是否真正生效：plist 存在 **且** 未被系统禁用。
+func isAutoStartEnabled() bool {
+	return launchAgentExists() && !isDisabledBySystem()
 }
 
 // setAutoStart 设置或取消开机启动
@@ -56,8 +76,11 @@ func enableAutoStart() error {
 	if err := os.WriteFile(path, []byte(plist), 0644); err != nil {
 		return err
 	}
-	// 注意：不调用 launchctl bootstrap，避免 RunAtLoad 当场再启动一个实例（出现双图标）。
-	// 开机自启由下次登录时 launchd 自动加载该登录项触发。
+	uid := fmt.Sprintf("%d", os.Getuid())
+	// 解除系统层面的禁用标记（用户可能此前在系统设置里关过）。
+	// 注意：只 enable、不 bootstrap，避免 RunAtLoad 当场再启动一个实例（双图标）；
+	// 开机时由 launchd 自动加载该登录项。
+	exec.Command("launchctl", "enable", "gui/"+uid+"/"+launchAgentLabel).Run()
 	return nil
 }
 
@@ -66,6 +89,8 @@ func disableAutoStart() error {
 	uid := fmt.Sprintf("%d", os.Getuid())
 	// 若此前 bootstrap 注册过，先卸载该登录项
 	exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchAgentLabel).Run()
+	// 同时打上 disabled 标记：即使 plist 因故残留，launchd 也不会再加载它
+	exec.Command("launchctl", "disable", "gui/"+uid+"/"+launchAgentLabel).Run()
 	os.Remove(path)
 	return nil
 }
