@@ -37,6 +37,19 @@ func versionLabel() string {
 	return versionText() + " build " + appBuild
 }
 
+// versionMenuLabel 是托盘菜单底部那行的紧凑写法，例如 "v1.0 · 20261029"。
+//
+// 单独做一个而不是直接用 versionLabel：菜单宽度由最长的那一项决定，而这一行
+// 恰好是菜单里最长的——"版本 v1.0 build 20261029" 会把整个菜单撑宽一大截，
+// 下面几项却只有四五个字，右边空出一大片。掐掉「版本」和「build」两个词，
+// 信息（版本 + 构建日期）一个不少，菜单能窄三成左右。
+func versionMenuLabel() string {
+	if appBuild == "" {
+		return versionText()
+	}
+	return versionText() + " · " + appBuild
+}
+
 // versionDetail 是排查用的完整信息：版本、构建日期、平台架构。
 // 只出现在 --version 输出和启动日志里。
 //

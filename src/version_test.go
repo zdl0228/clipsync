@@ -43,10 +43,16 @@ func TestVersionLabel(t *testing.T) {
 	if got := versionLabel(); got != want {
 		t.Fatalf("versionLabel = %q, want %q", got, want)
 	}
-	// 菜单项整体要短，否则托盘里会被系统截断
-	menu := "版本 " + versionLabel()
-	if n := len([]rune(menu)); n > 26 {
-		t.Fatalf("菜单项「%s」共 %d 字，太长", menu, n)
+	// 菜单底部那行要短：它是菜单里最长的一项，直接决定菜单宽度
+	menu := versionMenuLabel()
+	if n := len([]rune(menu)); n > 20 {
+		t.Fatalf("菜单项「%s」共 %d 字，太长会把菜单撑宽", menu, n)
+	}
+	if !strings.Contains(menu, "20261028") {
+		t.Fatalf("菜单项「%s」应保留构建日期", menu)
+	}
+	if len([]rune(menu)) >= len([]rune(versionLabel())) {
+		t.Fatalf("菜单项「%s」不比 versionLabel「%s」短，白折腾", menu, versionLabel())
 	}
 	// 不能出现时分：出现过 "-2142" 这种尾巴，用户嫌太长
 	if strings.Contains(menu, "-") {

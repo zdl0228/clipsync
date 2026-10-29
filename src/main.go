@@ -172,8 +172,8 @@ func onReady() {
 
 	mSync := systray.AddMenuItem("立即同步", "")
 
-	// 发送文件到 ▸ 目标设备子菜单
-	sendMenu := systray.AddMenuItem("发送文件到 ▸", "")
+	// 发送文件到 目标设备子菜单（macOS/Windows 都会自绘子菜单箭头，标题里不再加 ▸）
+	sendMenu := systray.AddMenuItem("发送文件到", "")
 	sendSlots = make([]*deviceSlot, maxSlots)
 	for i := 0; i < maxSlots; i++ {
 		s := &deviceSlot{item: sendMenu.AddSubMenuItem("", "")}
@@ -214,7 +214,7 @@ func onReady() {
 	systray.AddSeparator()
 	// 版本号常驻菜单底部（禁用态，点击无反应）：两台机器版本不一致时，
 	// 一眼就能看出是哪台没更新，比翻日志或看文件时间靠谱
-	mVersion := systray.AddMenuItem("版本 "+versionLabel(), "")
+	mVersion := systray.AddMenuItem(versionMenuLabel(), "")
 	mVersion.Disable()
 	mQuit := systray.AddMenuItem("退出", "")
 
