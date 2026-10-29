@@ -202,16 +202,16 @@ func onReady() {
 				setContextMenuPref("on")
 				log.Printf("已注册右键发送菜单（%s）", ctxMenuLabel)
 			}
-			mCtx = systray.AddMenuItem(ctxMenuLabel+": 开", "")
+			mCtx = systray.AddMenuItem(ctxMenuLabel, "")
 			mCtx.Check()
 		} else {
 			disableContextMenu()
-			mCtx = systray.AddMenuItem(ctxMenuLabel+": 关", "")
+			mCtx = systray.AddMenuItem(ctxMenuLabel, "")
 			mCtx.Uncheck()
 		}
 		systray.AddSeparator()
 	}
-	mAutoStart := systray.AddMenuItem("开机启动: 关", "")
+	mAutoStart := systray.AddMenuItem("开机启动", "")
 	systray.AddSeparator()
 	// 版本号常驻菜单底部（禁用态，点击无反应）：两台机器版本不一致时，
 	// 一眼就能看出是哪台没更新，比翻日志或看文件时间靠谱
@@ -402,7 +402,6 @@ func onReady() {
 						continue
 					}
 					setContextMenuPref("on")
-					mCtx.SetTitle(ctxMenuLabel + ": 开")
 					mCtx.Check()
 					// mac 的服务藏在右键子菜单里，开启后说明一下从哪找
 					if hint := contextMenuHint(); hint != "" {
@@ -414,7 +413,6 @@ func onReady() {
 						continue
 					}
 					setContextMenuPref("off")
-					mCtx.SetTitle(ctxMenuLabel + ": 关")
 					mCtx.Uncheck()
 				}
 				log.Printf("右键发送菜单: %s", map[bool]string{true: "开", false: "关"}[on])

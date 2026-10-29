@@ -94,12 +94,13 @@ func (s *deviceSlot) getIP() string {
 	return s.ip
 }
 
-// updateAutoStartMenu 同步菜单显示的开机启动状态
+// updateAutoStartMenu 同步菜单显示的开机启动状态。
+// 与「自动发现广播」「右键发送文件」保持一致：名称固定，用勾选表示开关。
 func updateAutoStartMenu(m *systray.MenuItem) {
 	if isAutoStartEnabled() {
-		m.SetTitle("开机启动: 开")
+		m.Check()
 	} else {
-		m.SetTitle("开机启动: 关")
+		m.Uncheck()
 	}
 }
 
