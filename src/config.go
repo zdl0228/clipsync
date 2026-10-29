@@ -24,7 +24,7 @@ import (
 var configDir string
 
 // token 是设备间共享的配对密钥，两端填同一个值即可配对；
-// 运行中可通过托盘「配对密钥…」修改，因此读写一律走 getToken/setToken，
+// 运行中可通过托盘「配对密钥」修改，因此读写一律走 getToken/setToken，
 // 避免托盘协程写入与网络协程读取之间形成数据竞争。
 var (
 	tokenMu sync.RWMutex
@@ -196,7 +196,7 @@ func initConfig() {
 
 // defaultToken 内置默认配对密钥：两端一致即可配对，开箱即用。
 // 同网段只要装了 ClipSync 且密钥相同就能接入，因此建议改成自己的密钥
-// （托盘「配对密钥…」可直接改，两台设备填同一个值）。
+// （托盘「配对密钥」可直接改，两台设备填同一个值）。
 const defaultToken = "clipsync-2026"
 
 func loadToken() {

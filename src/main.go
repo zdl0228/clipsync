@@ -92,7 +92,7 @@ func onReady() {
 		configDir, len([]rune(getToken())), tokenDesc, runtime.GOOS, runtime.GOARCH, name)
 	if getToken() == defaultToken {
 		log.Println("警告: 正在使用内置默认配对密钥；同网段任何 ClipSync 只要密钥相同就能配对并收发剪贴板。" +
-			"建议点托盘「配对密钥…」改成自己的密钥，两台设备填同一个值。")
+			"建议点托盘「配对密钥」改成自己的密钥，两台设备填同一个值。")
 	}
 	netw = NewNetwork(name)
 	clip = NewClipboard()
@@ -185,8 +185,8 @@ func onReady() {
 	progressItem.Hide()
 	systray.AddSeparator()
 
-	mToken := systray.AddMenuItem("配对密钥…", "")
-	mDirect := systray.AddMenuItem("直连指定 IP…", "")
+	mToken := systray.AddMenuItem("配对密钥", "")
+	mDirect := systray.AddMenuItem("IP直连配对", "")
 	// 开关项的"开/关"统一用标题末尾的 ✓ 表示，不用 systray 的 Check()：
 	// 原生勾选框会占左侧一列，只有带勾选的项才缩进，文字左边缘对不齐
 	mBroadcast := systray.AddMenuItem(toggleTitle("自动发现广播", netw.BroadcastEnabled()), "")
