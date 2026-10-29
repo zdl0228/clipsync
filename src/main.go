@@ -187,8 +187,9 @@ func onReady() {
 
 	mToken := systray.AddMenuItem("配对密钥…", "")
 	mDirect := systray.AddMenuItem("直连指定 IP…", "")
-	mBroadcast := systray.AddMenuItem("自动发现广播", "")
-	mBroadcast.Check()
+	// 开关项的"开/关"统一用标题末尾的 ✓ 表示，不用 systray 的 Check()：
+	// 原生勾选框会占左侧一列，只有带勾选的项才缩进，文字左边缘对不齐
+	mBroadcast := systray.AddMenuItem(toggleTitle("自动发现广播", netw.BroadcastEnabled()), "")
 	systray.AddSeparator()
 
 	// 右键发送：Windows 写注册表、macOS 装 Finder 服务（见 contextmenu_*.go）。
@@ -202,16 +203,14 @@ func onReady() {
 				setContextMenuPref("on")
 				log.Printf("已注册右键发送菜单（%s）", ctxMenuLabel)
 			}
-			mCtx = systray.AddMenuItem(ctxMenuLabel, "")
-			mCtx.Check()
+			mCtx = systray.AddMenuItem(toggleTitle(ctxMenuLabel, true), "")
 		} else {
 			disableContextMenu()
-			mCtx = systray.AddMenuItem(ctxMenuLabel, "")
-			mCtx.Uncheck()
+			mCtx = systray.AddMenuItem(toggleTitle(ctxMenuLabel, false), "")
 		}
 		systray.AddSeparator()
 	}
-	mAutoStart := systray.AddMenuItem("开机启动", "")
+	mAutoStart := systray.AddMenuItem(toggleTitle("开机启动", isAutoStartEnabled()), "")
 	systray.AddSeparator()
 	// 版本号常驻菜单底部（禁用态，点击无反应）：两台机器版本不一致时，
 	// 一眼就能看出是哪台没更新，比翻日志或看文件时间靠谱
@@ -334,11 +333,7 @@ func onReady() {
 			on := !netw.BroadcastEnabled()
 			netw.SetBroadcast(on)
 			log.Printf("自动发现广播: %s", map[bool]string{true: "开", false: "关"}[on])
-			if on {
-				mBroadcast.Check()
-			} else {
-				mBroadcast.Uncheck()
-			}
+			mBroadcast.SetTitle(toggleTitle("自动发现广播", on))
 		}
 	}()
 
@@ -402,7 +397,7 @@ func onReady() {
 						continue
 					}
 					setContextMenuPref("on")
-					mCtx.Check()
+					mCtx.SetTitle(toggleTitle(ctxMenuLabel, true))
 					// mac 的服务藏在右键子菜单里，开启后说明一下从哪找
 					if hint := contextMenuHint(); hint != "" {
 						dialog.Message("%s", hint).Info()
@@ -413,7 +408,7 @@ func onReady() {
 						continue
 					}
 					setContextMenuPref("off")
-					mCtx.Uncheck()
+					mCtx.SetTitle(toggleTitle(ctxMenuLabel, false))
 				}
 				log.Printf("右键发送菜单: %s", map[bool]string{true: "开", false: "关"}[on])
 			}
